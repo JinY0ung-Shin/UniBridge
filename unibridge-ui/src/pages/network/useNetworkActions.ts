@@ -11,7 +11,8 @@ import {
   verifyPortUsage,
 } from '../../api/network';
 import { useToast } from '../../components/useToast';
-import { NETWORK_KEY, networkErrorMessage } from './networkUtils';
+import { NETWORK_KEY } from './networkUtils';
+import { apiErrorDetail } from '../../utils/apiError';
 
 /** A network write: refreshes every network query, toasts the backend's reason on failure. */
 export function useNetworkMutation<TVars, TData>(
@@ -31,7 +32,7 @@ export function useNetworkMutation<TVars, TData>(
     onError: (err) => addToast({
       type: 'error',
       title: t(errorTitleKey),
-      message: networkErrorMessage(err) || undefined,
+      message: apiErrorDetail(err),
     }),
   });
 }

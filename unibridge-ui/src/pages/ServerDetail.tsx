@@ -11,6 +11,7 @@ import { useChartTheme, type ChartTheme } from '../components/useChartTheme';
 import GrafanaLink from '../components/GrafanaLink';
 import { isolatedPointDot } from '../utils/chartDots';
 import { formatChartPointTime, formatChartTimestamp } from '../utils/time';
+import { formatBytes } from '../utils/bytes';
 import './Connections.css';
 import './Servers.css';
 
@@ -85,8 +86,6 @@ function stepSeconds(step: string): number {
   return Number.isFinite(n) && n > 0 ? n : 60;
 }
 
-const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-
 function asFiniteNumber(value: number | string | null | undefined): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
@@ -98,16 +97,10 @@ function asFiniteNumber(value: number | string | null | undefined): number | nul
   return null;
 }
 
-function formatBytes(value: number | string | null | undefined) {
+function formatDiskBytes(value: number | string | null | undefined) {
   const bytes = asFiniteNumber(value);
   if (bytes == null || bytes < 0) return null;
-  let size = bytes;
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-  return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${BYTE_UNITS[unitIndex]}`;
+  return formatBytes(bytes, { iec: true, fixedDecimal: true });
 }
 
 function formatDiskCapacityValue(
@@ -115,9 +108,9 @@ function formatDiskCapacityValue(
   totalBytes: number | string | null | undefined,
   t: (key: string, options?: Record<string, string>) => string,
 ) {
-  const total = formatBytes(totalBytes);
+  const total = formatDiskBytes(totalBytes);
   if (!total) return null;
-  const used = formatBytes(usedBytes);
+  const used = formatDiskBytes(usedBytes);
   if (!used) return t('servers.diskTotal', { total });
   return t('servers.diskCapacityValue', { used, total });
 }

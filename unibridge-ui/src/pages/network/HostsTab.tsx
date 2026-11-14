@@ -10,7 +10,8 @@ import {
 } from '../../api/network';
 import { useCanWrite } from '../../components/useCanWrite';
 import { useToast } from '../../components/useToast';
-import { NETWORK_KEY, intOrUndefined, networkErrorMessage } from './networkUtils';
+import { NETWORK_KEY, intOrUndefined } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 import { HostLink, ProvenanceBadges, RegionName } from './NetworkTables';
 import { HostFormModal } from './NetworkForms';
 import { CsvImportButton } from './CsvImportModal';
@@ -64,7 +65,7 @@ function HostsTab() {
           await updateNetworkHost(host.id, { kind: target });
           done += 1;
         } catch (err) {
-          failed.push(`${host.name}: ${networkErrorMessage(err)}`);
+          failed.push(`${host.name}: ${apiErrorMessage(err, '')}`);
           failedIds.push(host.id);
         }
       }
@@ -99,7 +100,7 @@ function HostsTab() {
       <div className="network-toolbar">
         <div className="network-filters">
           <input
-            className="connection-search-input"
+            className="search-input"
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -185,7 +186,7 @@ function HostsTab() {
                     />
                   </th>
                 )}
-                <th scope="col">{t('network.hosts.name')}</th>
+                <th scope="col">{t('common.name')}</th>
                 <th scope="col">{t('network.hosts.ip')}</th>
                 <th scope="col">{t('network.region')}</th>
                 <th scope="col">{t('network.owner')}</th>

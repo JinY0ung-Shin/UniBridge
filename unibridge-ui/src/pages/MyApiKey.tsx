@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AxiosError } from 'axios';
@@ -11,6 +11,7 @@ import {
 } from '../api/client';
 import type { ApiKey } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCopyFeedback } from '../components/useCopyFeedback';
 import { formatKST } from '../utils/time';
 import './ApiKeys.css';
 
@@ -31,8 +32,9 @@ function MyApiKey() {
   const { addToast } = useToast();
 
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const copyTimeoutRef = useRef<number | null>(null);
+  const { copied, copy, reset: resetCopied } = useCopyFeedback(
+    () => addToast({ type: 'error', title: t('myApiKey.copyFailed') }),
+  );
 
   const keyQuery = useQuery({ queryKey: ['my-api-key'], queryFn: getMyApiKey });
 
@@ -74,7 +76,7 @@ function MyApiKey() {
     mutationFn: deleteMyApiKey,
     onSuccess: () => {
       setRevealedKey(null);
-      setCopied(false);
+      resetCopied();
       queryClient.setQueryData(['my-api-key'], null);
       addToast({ type: 'success', title: t('myApiKey.deleteSuccess') });
     },
@@ -83,31 +85,16 @@ function MyApiKey() {
 
   const apiKey = keyQuery.data ?? null;
 
-  function clearCopyTimer() {
-    if (copyTimeoutRef.current !== null) {
-      window.clearTimeout(copyTimeoutRef.current);
-      copyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCopyTimer();
-    };
-  }, []);
-
   function handleCreate() {
-    clearCopyTimer();
+    resetCopied();
     setRevealedKey(null);
-    setCopied(false);
     createMut.mutate();
   }
 
   function handleRegenerate() {
     if (window.confirm(t('myApiKey.regenerateConfirm'))) {
-      clearCopyTimer();
+      resetCopied();
       setRevealedKey(null);
-      setCopied(false);
       regenerateMut.mutate();
     }
   }
@@ -118,26 +105,13 @@ function MyApiKey() {
 
   function handleDelete() {
     if (window.confirm(t('myApiKey.deleteConfirm'))) {
-      clearCopyTimer();
+      resetCopied();
       deleteMut.mutate();
     }
   }
 
-  async function handleCopy() {
-    if (revealedKey) {
-      try {
-        clearCopyTimer();
-        await navigator.clipboard.writeText(revealedKey);
-        setCopied(true);
-        copyTimeoutRef.current = window.setTimeout(() => {
-          setCopied(false);
-          copyTimeoutRef.current = null;
-        }, 2000);
-      } catch {
-        setCopied(false);
-        addToast({ type: 'error', title: t('myApiKey.copyFailed') });
-      }
-    }
+  function handleCopy() {
+    if (revealedKey) void copy(revealedKey);
   }
 
   const isBusy =
@@ -169,7 +143,7 @@ function MyApiKey() {
               onClick={handleCopy}
               aria-label={copied ? t('myApiKey.copiedRevealedKey') : t('myApiKey.copyRevealedKey')}
             >
-              {copied ? t('myApiKey.copied') : t('myApiKey.copy')}
+              {copied ? t('myApiKey.copied') : t('common.copy')}
             </button>
           </div>
         </div>
@@ -197,7 +171,7 @@ function MyApiKey() {
           <table className="data-table">
             <tbody>
               <tr>
-                <th scope="row">{t('myApiKey.keyName')}</th>
+                <th scope="row">{t('common.name')}</th>
                 <td className="cell-alias">{apiKey.name}</td>
               </tr>
               <tr>
@@ -256,7 +230,7 @@ function MyApiKey() {
               disabled={isBusy}
               aria-busy={deleteMut.isPending}
             >
-              {deleteMut.isPending ? t('common.saving') : t('myApiKey.delete')}
+              {deleteMut.isPending ? t('common.saving') : t('common.delete')}
             </button>
           </div>
         </div>

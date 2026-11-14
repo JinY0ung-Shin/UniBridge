@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -12,8 +12,10 @@ import {
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
-import ResourceModal from '../components/ResourceModal';
+import CurlModal from '../components/CurlModal';
 import { routeUriLabel } from '../utils/gatewayRoutes';
+import { apiErrorDetail } from '../utils/apiError';
+import { saveJson } from '../utils/download';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -21,8 +23,7 @@ const METHOD_COLORS: Record<string, string> = {
 };
 
 function routeServiceKeys(route: GatewayRoute) {
-  if (route.service_keys?.length) return route.service_keys;
-  return route.service_key ? [route.service_key] : [];
+  return route.service_keys ?? [];
 }
 
 function GatewayRoutes() {
@@ -35,9 +36,7 @@ function GatewayRoutes() {
   const [testStatus, setTestStatus] = useState<Record<string, 'ok' | 'fail'>>({});
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [curlModal, setCurlModal] = useState<{ routeName: string; curl: string } | null>(null);
-  const [curlCopied, setCurlCopied] = useState(false);
   const [routeSearch, setRouteSearch] = useState('');
-  const curlCopyTimeoutRef = useRef<number | null>(null);
 
   const routesQuery = useQuery({
     queryKey: ['gateway-routes'],
@@ -50,11 +49,7 @@ function GatewayRoutes() {
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
     },
     onError: (err: unknown) => {
-      const detail =
-        err && typeof err === 'object' && 'response' in err
-          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : undefined;
-      addToast({ type: 'error', title: t('gatewayRoutes.deleteFailed'), message: detail });
+      addToast({ type: 'error', title: t('gatewayRoutes.deleteFailed'), message: apiErrorDetail(err) });
     },
   });
 
@@ -84,19 +79,6 @@ function GatewayRoutes() {
       deleteMutation.mutate(route.id);
     }
   }
-
-  function clearCurlCopyTimer() {
-    if (curlCopyTimeoutRef.current !== null) {
-      window.clearTimeout(curlCopyTimeoutRef.current);
-      curlCopyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCurlCopyTimer();
-    };
-  }, []);
 
   async function handleTest(routeId: string, routeName: string) {
     setTestingIds((prev) => new Set(prev).add(routeId));
@@ -132,47 +114,15 @@ function GatewayRoutes() {
   async function handleCurl(route: GatewayRoute) {
     try {
       const { curl } = await getGatewayRouteCurl(route.id);
-      clearCurlCopyTimer();
       setCurlModal({ routeName: route.name || route.uri, curl });
-      setCurlCopied(false);
     } catch {
       addToast({ type: 'error', title: t('gatewayRoutes.curlFailed') });
     }
   }
 
-  async function handleCopy() {
-    if (curlModal) {
-      try {
-        clearCurlCopyTimer();
-        await navigator.clipboard.writeText(curlModal.curl);
-        setCurlCopied(true);
-        curlCopyTimeoutRef.current = window.setTimeout(() => {
-          setCurlCopied(false);
-          curlCopyTimeoutRef.current = null;
-        }, 2000);
-      } catch {
-        setCurlCopied(false);
-        addToast({ type: 'error', title: t('connections.copyFailed') });
-      }
-    }
-  }
-
-  function closeCurlModal() {
-    clearCurlCopyTimer();
-    setCurlCopied(false);
-    setCurlModal(null);
-  }
-
   async function handleOpenApiDownload() {
     try {
-      const spec = await getGatewayOpenApiSpec();
-      const blob = new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'unibridge-gateway-openapi.json';
-      a.click();
-      URL.revokeObjectURL(url);
+      saveJson(await getGatewayOpenApiSpec(), 'unibridge-gateway-openapi.json');
     } catch {
       addToast({ type: 'error', title: t('gatewayRoutes.openApiFailed') });
     }
@@ -180,7 +130,7 @@ function GatewayRoutes() {
 
   function renderTestBadge(routeId: string) {
     if (testingIds.has(routeId)) {
-      return <span className="test-result test-result--pending">{t('gatewayRoutes.testing')}</span>;
+      return <span className="test-result test-result--pending">{t('common.testing')}</span>;
     }
     const status = testStatus[routeId];
     if (!status) return null;
@@ -201,7 +151,7 @@ function GatewayRoutes() {
         <div className="page-header-actions">
           {routes.length > 0 && (
             <input
-              className="route-search-input"
+              className="search-input"
               type="search"
               value={routeSearch}
               onChange={(event) => setRouteSearch(event.target.value)}
@@ -296,7 +246,7 @@ function GatewayRoutes() {
                           onClick={() => handleTest(route.id, route.name || route.uri)}
                           disabled={testingIds.has(route.id)}
                         >
-                          {t('gatewayRoutes.test')}
+                          {t('common.test')}
                         </button>
                       )}
                       <button
@@ -357,28 +307,12 @@ function GatewayRoutes() {
       )}
 
       {curlModal && (
-        <ResourceModal
+        <CurlModal
           title={t('gatewayRoutes.curlTitle')}
-          onClose={closeCurlModal}
-          closeLabel={t('common.close')}
-          className="modal--sm"
-        >
-          <div className="curl-block">
-            <div className="curl-route-name">{curlModal.routeName}</div>
-            <pre className="curl-code">{curlModal.curl}</pre>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary curl-copy-btn"
-              onClick={handleCopy}
-              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
-            >
-              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-            </button>
-            <span className="visually-hidden" role="status" aria-live="polite">
-              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
-            </span>
-          </div>
-        </ResourceModal>
+          caption={curlModal.routeName}
+          curl={curlModal.curl}
+          onClose={() => setCurlModal(null)}
+        />
       )}
     </div>
   );

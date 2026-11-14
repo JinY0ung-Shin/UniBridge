@@ -4,7 +4,6 @@ import {
   captureTicket,
   fileExtension,
   fragmentTicket,
-  formatBytes,
   isUploadRelayPath,
   problemFor,
 } from '../utils/uploadRelay';
@@ -88,13 +87,10 @@ describe('upload relay helpers', () => {
     expect(problemFor(502, null)).toBe('unknown');
   });
 
-  it('reads extensions and formats sizes', () => {
+  it('reads extensions', () => {
     expect(fileExtension('Report.PDF')).toBe('.pdf');
     expect(fileExtension('archive.tar.gz')).toBe('.gz');
     expect(fileExtension('noext')).toBe('');
     expect(fileExtension('.hidden')).toBe('');
-    expect(formatBytes(512)).toBe('512 B');
-    expect(formatBytes(2048)).toBe('2.0 KB');
-    expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB');
   });
 });

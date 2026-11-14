@@ -259,6 +259,23 @@ describe('Users page flows', () => {
     cs.mockRestore();
   });
 
+  it('create shows a 422 validation list as text', async () => {
+    mocks.create.mockRejectedValue({
+      response: { status: 422, data: { detail: [{ loc: ['body', 'email'], msg: 'value is not a valid email address' }] } },
+    });
+    renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Add User|사용자 추가/i }));
+    const usernameInput = await screen.findByRole('textbox', { name: /Username|사용자 이름/i });
+    await userEvent.type(usernameInput, 'newuser');
+    await userEvent.type(
+      screen.getByLabelText(/Password \(min 8 characters\)|비밀번호 \(최소 8자\)/i),
+      'longpassword123',
+    );
+    fireEvent.submit(usernameInput.closest('form')!);
+    await waitFor(() => expect(screen.getByText('value is not a valid email address')).toBeInTheDocument());
+  });
+
   it('delete error path shows toast with API detail', async () => {
     mocks.remove.mockRejectedValue({ response: { data: { detail: 'forbidden' } } });
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);

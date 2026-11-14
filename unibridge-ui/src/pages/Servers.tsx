@@ -17,6 +17,7 @@ import GrafanaLink from '../components/GrafanaLink';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import { scrapeStatusLabel, testToastType } from '../utils/scrapeStatus';
+import { apiErrorDetail } from '../utils/apiError';
 import './Connections.css';
 import './Servers.css';
 
@@ -65,26 +66,6 @@ function statusClass(status?: string | null): string {
   return 'status-badge--unknown';
 }
 
-/**
- * Surface the backend's reason for a failure instead of a generic toast.
- * FastAPI uses two `detail` shapes: a plain string for HTTPException (409/403,
- * threshold 422) and an array of `{msg, loc}` for request-body validation
- * (e.g. a bad host:port address). Handle both, falling back to `fallback`.
- */
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'isAxiosError' in err) {
-    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (Array.isArray(detail)) {
-      const msgs = detail
-        .map((d) => (d && typeof d === 'object' && 'msg' in d ? String((d as { msg: unknown }).msg) : ''))
-        .filter(Boolean);
-      if (msgs.length) return msgs.join('; ');
-    }
-  }
-  return fallback;
-}
-
 function Servers() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -119,7 +100,7 @@ function Servers() {
     onError: (err) => addToast({
       type: 'error',
       title: t('servers.saveFailed'),
-      message: extractErrorMessage(err, ''),
+      message: apiErrorDetail(err),
     }),
   });
 
@@ -129,7 +110,7 @@ function Servers() {
     onError: (err) => addToast({
       type: 'error',
       title: t('servers.saveFailed'),
-      message: extractErrorMessage(err, ''),
+      message: apiErrorDetail(err),
     }),
   });
 
@@ -139,7 +120,7 @@ function Servers() {
     onError: (err) => addToast({
       type: 'error',
       title: t('servers.deleteFailed'),
-      message: extractErrorMessage(err, ''),
+      message: apiErrorDetail(err),
     }),
   });
 
@@ -152,14 +133,14 @@ function Servers() {
         : '';
       addToast({
         type: testToastType(data.status, data.gpu_status),
-        title: `${t('servers.statusLabel')}: ${scrapeStatusLabel(t, data.status)}${gpuSuffix}`,
+        title: `${t('common.status')}: ${scrapeStatusLabel(t, data.status)}${gpuSuffix}`,
         message: data.detail ?? undefined,
       });
     },
     onError: (err) => addToast({
       type: 'error',
       title: t('servers.testFailed'),
-      message: extractErrorMessage(err, ''),
+      message: apiErrorDetail(err),
     }),
   });
 
@@ -262,7 +243,7 @@ function Servers() {
           <GrafanaLink dashboard="unibridge-servers" />
           {servers.length > 0 && (
             <input
-              className="connection-search-input"
+              className="search-input"
               type="search"
               value={serverSearch}
               onChange={(event) => setServerSearch(event.target.value)}
@@ -295,8 +276,8 @@ function Servers() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">{t('servers.statusLabel')}</th>
-                  <th scope="col">{t('servers.name')}</th>
+                  <th scope="col">{t('common.status')}</th>
+                  <th scope="col">{t('common.name')}</th>
                   <th scope="col">{t('servers.address')}</th>
                   <th scope="col">{t('servers.diskMountpoints')}</th>
                   <th scope="col">{t('servers.description')}</th>
@@ -336,7 +317,7 @@ function Servers() {
                           disabled={testMutation.isPending}
                           aria-busy={isTesting}
                         >
-                          {isTesting ? t('common.testing') : t('servers.test')}
+                          {isTesting ? t('common.testing') : t('common.test')}
                         </button>
                         {canWrite && (
                           <>
@@ -381,14 +362,14 @@ function Servers() {
           <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
             <div className="form-grid">
               <div className="form-group">
-                <label htmlFor="server-name">{t('servers.name')}</label>
+                <label htmlFor="server-name">{t('common.name')}</label>
                 <input
                   id="server-name"
                   value={form.name}
                   disabled={editingId != null}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="web-prod-1"
-                  aria-label={t('servers.name')}
+                  aria-label={t('common.name')}
                   required
                 />
               </div>

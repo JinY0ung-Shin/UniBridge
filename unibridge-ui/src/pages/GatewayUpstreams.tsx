@@ -340,7 +340,7 @@ function GatewayUpstreams() {
         onAdd={openCreate}
         extra={upstreams.length > 0 ? (
           <input
-            className="upstream-search-input"
+            className="search-input"
             type="search"
             value={upstreamSearch}
             onChange={(event) => setUpstreamSearch(event.target.value)}

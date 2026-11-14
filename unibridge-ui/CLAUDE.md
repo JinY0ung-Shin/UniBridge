@@ -37,6 +37,12 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
   Its `/_unibridge/sso` goes to unibridge-service: the Bifrost button's sign-in handoff.
 - `build` runs `tsc -b` first — a type error fails the build (and the release gate). Manual chunking for
   recharts/keycloak/tanstack/i18n/react is configured in `vite.config.ts`.
+- **CSS across pages**: every page is a lazy chunk, so a rule in one page's CSS reaches another
+  page only after the first was opened. A class a second page (or a shared component) uses
+  belongs in `styles/shared.css`.
+- **API errors as text**: go through `utils/apiError.ts` (`apiErrorDetail`, `apiErrorMessage`,
+  `errorMessage`), never `response.data.detail` directly: a 422 `detail` is a list of `{msg, loc}`
+  and rendering it throws "Objects are not valid as a React child".
 - Tests: vitest + Testing Library + jsdom, in `src/test/*.test.ts(x)`.
 - `src/content/api-metrics-convention.md` is a committed mirror of the canonical
   `docs/api-metrics-convention.md` (repo root is outside this package's docker build

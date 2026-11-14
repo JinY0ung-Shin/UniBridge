@@ -225,21 +225,6 @@ describe('QuerySettingsPage', () => {
     });
   });
 
-  it('defaults retention fields to 0 when the backend omits them', async () => {
-    const withoutRetention = { ...defaultSettings };
-    delete (withoutRetention as Partial<typeof defaultSettings>).audit_log_retention_days;
-    delete (withoutRetention as Partial<typeof defaultSettings>).admin_audit_log_retention_days;
-    delete (withoutRetention as Partial<typeof defaultSettings>).alert_history_retention_days;
-    mockedGetQuerySettings.mockResolvedValue(withoutRetention);
-    renderWithProviders(<QuerySettingsPage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('spinbutton', { name: 'Query audit log retention (days)' })).toHaveValue(0);
-    });
-    // no spurious "unsaved changes" from the defaulting
-    expect(screen.getByText('No settings changes')).toBeInTheDocument();
-  });
-
   /* ── Write gating ── */
 
   it('disables every field and hides Save without query.settings.write', async () => {

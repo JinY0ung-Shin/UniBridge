@@ -814,17 +814,6 @@ describe('api client API helpers', () => {
     expect(await mod.readBlobErrorDetail(undefined)).toBeUndefined();
   });
 
-  it('getAlertStatus widens a legacy bare-array response', async () => {
-    const mod = await importClient(keycloak);
-    mod.default.defaults.adapter = makeAdapter(() => [
-      { target: 'db1', type: 'db_health', status: 'alert', since: null },
-    ]);
-    expect(await mod.getAlertStatus()).toEqual({
-      items: [{ target: 'db1', type: 'db_health', status: 'alert', since: null }],
-      global_muted_until: null,
-    });
-  });
-
   it('getAlertStatus passes through the object response with the global mute', async () => {
     const mod = await importClient(keycloak);
     mod.default.defaults.adapter = makeAdapter(() => ({

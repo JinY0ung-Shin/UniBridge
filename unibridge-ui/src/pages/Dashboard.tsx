@@ -8,12 +8,12 @@ import {
 } from 'recharts';
 import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getMetricsRequestsTotal, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
-import { useChartTheme } from '../components/useChartTheme';
+import { useChartTheme, chartTooltipProps } from '../components/useChartTheme';
 import UniBridgeLogo from '../components/UniBridgeLogo';
 import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel, formatChartTime } from '../utils/time';
-import { errorRateColor, formatLatencyMs } from '../utils/monitoring';
+import { compactNumber, errorRateColor, formatCost, formatLatencyMs } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 import OpsSummary from './dashboard/OpsSummary';
 import './Dashboard.css';
@@ -254,9 +254,7 @@ function Dashboard() {
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
                       </LineChart>
@@ -272,9 +270,7 @@ function Dashboard() {
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Bar dataKey="requests" fill={chartColors.blue} name={t('gatewayMonitoring.requests')} />
                       </BarChart>
@@ -310,14 +306,12 @@ function Dashboard() {
               <div className="summary-cards">
                 <div className="summary-card">
                   <div className="summary-card__value">
-                    {llmSummaryQuery.data.total_tokens >= 1000
-                      ? `${(llmSummaryQuery.data.total_tokens / 1000).toFixed(1)}K`
-                      : llmSummaryQuery.data.total_tokens.toLocaleString()}
+                    {compactNumber(llmSummaryQuery.data.total_tokens)}
                   </div>
                   <div className="summary-card__label">{t('llmMonitoring.totalTokens', { range: dashRange(llmBucket) })}</div>
                 </div>
                 <div className="summary-card">
-                  <div className="summary-card__value">${llmSummaryQuery.data.estimated_cost.toFixed(2)}</div>
+                  <div className="summary-card__value">{formatCost(llmSummaryQuery.data.estimated_cost)}</div>
                   <div className="summary-card__label">{t('llmMonitoring.estimatedCost')}</div>
                 </div>
                 <div className="summary-card">
@@ -338,9 +332,7 @@ function Dashboard() {
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                         <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('llmMonitoring.prompt')} />
@@ -352,9 +344,7 @@ function Dashboard() {
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                         <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name={t('llmMonitoring.prompt')} />

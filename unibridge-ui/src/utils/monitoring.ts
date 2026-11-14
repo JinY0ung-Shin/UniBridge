@@ -31,6 +31,18 @@ export function formatSeconds(seconds: number): string {
   return `${seconds.toLocaleString(undefined, { maximumFractionDigits: digits })}s`;
 }
 
+/** A count for cards and chart axes: 2_500_000 → "2.5M", 1_234 → "1.2K", 12.4 → "12". */
+export function compactNumber(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(Math.round(value));
+}
+
+/** An estimated LLM cost in dollars. */
+export function formatCost(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
 /** formatSeconds for a millisecond value (the API reports latency in ms). */
 export function formatLatencyMs(ms: number): string {
   return formatSeconds(ms / 1000);

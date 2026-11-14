@@ -54,8 +54,6 @@
   margin-bottom: 16px;
 }
 
-/* .editor-topbar* moved to styles/shared.css (reused by QueryTemplates). */
-
 .sql-editor {
   width: 100%;
   padding: 16px 18px;
@@ -75,66 +73,10 @@
   color: var(--text-tertiary);
 }
 
-/* ── Error ── */
-
-.query-error {
-  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
-  color: var(--accent-red);
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  margin-bottom: 16px;
-  border: 1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);
-}
-
-.query-error strong {
-  font-weight: 700;
-}
-
-/* ── Truncated warning ── */
-
-.truncated-warning {
-  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
-  color: var(--accent-yellow);
-  padding: 10px 16px;
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  margin-bottom: 10px;
-  border: 1px solid color-mix(in srgb, var(--accent-yellow) 30%, transparent);
-  font-weight: 500;
-}
-
 /* ── Results ── */
 
 .query-results {
   margin-top: 8px;
-}
-
-.results-meta {
-  display: flex;
-  gap: 20px;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin-bottom: 10px;
-  padding: 0 2px;
-  font-family: var(--font-mono);
-}
-
-/* .results-table* moved to styles/shared.css (reused by QueryTemplates). */
-
-.null-value {
-  color: var(--text-tertiary);
-  font-style: italic;
-}
-
-.no-rows {
-  text-align: center;
-  padding: 32px;
-  color: var(--text-tertiary);
-  font-size: 14px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
 }
 
 /* ── Workspace: history & saved queries ── */

@@ -17,7 +17,7 @@ import {
   getQueryConsumersSeries,
   getApiKeys,
 } from '../api/client';
-import { useChartTheme } from '../components/useChartTheme';
+import { useChartTheme, chartTooltipProps } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
 import PanelStatus from '../components/PanelStatus';
@@ -322,11 +322,7 @@ function QueryMonitoring() {
     databasesSeriesQuery.isError || consumersSeriesQuery.isError
   );
 
-  const tooltipProps = {
-    contentStyle: { background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 },
-    labelStyle: { color: chartColors.axis },
-    itemStyle: { color: chartColors.textSecondary },
-  };
+  const tooltipProps = chartTooltipProps(chartColors);
 
   return (
     <div className="gateway-monitoring">
@@ -462,7 +458,7 @@ function QueryMonitoring() {
                 <Tooltip {...tooltipProps} />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Bar dataKey="success" stackId="outcome" fill={chartColors.green} name={t('queryMonitoring.success')} />
-                <Bar dataKey="error" stackId="outcome" fill={chartColors.red} name={t('queryMonitoring.error')} />
+                <Bar dataKey="error" stackId="outcome" fill={chartColors.red} name={t('common.error')} />
                 <Bar dataKey="timeout" stackId="outcome" fill={chartColors.yellow} name={t('queryMonitoring.timeout')} />
               </BarChart>
             </ResponsiveContainer>
@@ -516,7 +512,7 @@ function QueryMonitoring() {
               <thead>
                 <tr>
                   <SortableHeader column="database"       label={t('queryMonitoring.database')}         activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />
-                  <SortableHeader column="db_type"        label={t('queryMonitoring.dbType')}           activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />
+                  <SortableHeader column="db_type"        label={t('common.type')}           activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />
                   <SortableHeader column="queries"        label={t('queryMonitoring.queries')}          align="right" activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />
                   <SortableHeader column="share"          label={t('queryMonitoring.share')}            align="right" activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />
                   <SortableHeader column="error_rate"     label={t('queryMonitoring.errorRateColumn')}  align="right" activeColumn={dbSort.column} dir={dbSort.dir} onToggle={toggleDbSort} />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { ThemeProvider } from '../components/ThemeContext';
-import { statusCodeColor, useChartTheme } from '../components/useChartTheme';
+import { chartTooltipProps, statusCodeColor, useChartTheme } from '../components/useChartTheme';
 
 describe('statusCodeColor', () => {
   const theme = {
@@ -34,6 +34,14 @@ describe('statusCodeColor', () => {
     expect(statusCodeColor('abc', theme)).toBe('#tt');
     expect(statusCodeColor('600', theme)).toBe('#tt');
     expect(statusCodeColor('100', theme)).toBe('#tt');
+  });
+
+  it('builds the tooltip styling from the same theme', () => {
+    expect(chartTooltipProps(theme)).toEqual({
+      contentStyle: { background: '#tb', border: '1px solid #tbd', borderRadius: 6 },
+      labelStyle: { color: '#a' },
+      itemStyle: { color: '#ts' },
+    });
   });
 });
 

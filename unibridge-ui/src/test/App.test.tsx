@@ -129,7 +129,6 @@ function renderWithProviders(ui: React.ReactElement) {
 
 describe('App', () => {
   beforeEach(() => {
-    localStorage.setItem('auth_token', 'fake-token');
     // Reset URL to root before each test
     window.history.pushState({}, '', '/');
     // Reset to a clean default so a prior test's reject/limited-perms override

@@ -16,20 +16,14 @@ import {
 import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
 import { formatKST } from '../utils/time';
+import { formatBytes } from '../utils/bytes';
+import { saveBlob } from '../utils/download';
 import './S3Browser.css';
 
 // A full listing can hold up to S3_LIST_ALL_MAX_KEYS (default 100k) entries;
 // drawing that many rows would freeze the tab, so only this many are rendered —
 // the filter still searches every loaded entry.
 const MAX_RENDERED_ENTRIES = 2000;
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-}
 
 function S3Browser() {
   const { t } = useTranslation();
@@ -164,17 +158,7 @@ function S3Browser() {
         bucket: selectedBucket,
         key,
       });
-      const url = window.URL.createObjectURL(blob);
-      try {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } finally {
-        setTimeout(() => window.URL.revokeObjectURL(url), 1000);
-      }
+      saveBlob(blob, filename);
     } catch {
       addToast({ type: 'error', title: t('s3.downloadFailed') });
     } finally {

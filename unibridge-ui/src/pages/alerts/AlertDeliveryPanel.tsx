@@ -658,7 +658,7 @@ export default function AlertDeliveryPanel() {
             </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeChannelModal}>
-                {t('alerts.cancel')}
+                {t('common.cancel')}
               </button>
               <button
                 type="submit"
@@ -666,7 +666,7 @@ export default function AlertDeliveryPanel() {
                 disabled={isSavingChannel}
                 aria-busy={isSavingChannel}
               >
-                {isSavingChannel ? t('common.saving') : t('alerts.save')}
+                {isSavingChannel ? t('common.saving') : t('common.save')}
               </button>
             </div>
           </form>

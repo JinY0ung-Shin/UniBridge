@@ -17,27 +17,6 @@
   justify-content: flex-end;
 }
 
-.route-search-input {
-  width: min(260px, 32vw);
-  min-width: 180px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: var(--font-sans);
-  outline: none;
-}
-
-.route-search-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.route-search-input::placeholder {
-  color: var(--text-tertiary);
-}
-
 .method-badges {
   display: flex;
   gap: 4px;
@@ -183,27 +162,12 @@
   background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 }
 
-.btn-outline {
-  background: none;
-  border: 1px solid var(--border-default);
-  color: var(--text-secondary);
-}
-
-.btn-outline:hover {
-  border-color: var(--text-tertiary);
-  color: var(--text-primary);
-}
-
-/* curl modal widget (.modal--sm/.curl-*) now lives in styles/shared.css —
-   it is reused by Connections & S3Connections, which don't load this chunk. */
-
 @media (max-width: 720px) {
   .gateway-routes .page-header-actions {
     width: 100%;
     justify-content: flex-start;
   }
 
-  .route-search-input,
   .gateway-routes .page-header-actions .btn {
     width: 100%;
   }

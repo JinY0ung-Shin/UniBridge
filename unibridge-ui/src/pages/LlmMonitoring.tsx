@@ -18,7 +18,7 @@ import {
   getApiKeys,
   createBifrostSsoHandoff,
 } from '../api/client';
-import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
+import { useChartTheme, statusCodeColor, chartTooltipProps } from '../components/useChartTheme';
 import { useAuth } from '../components/useAuth';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
@@ -32,7 +32,7 @@ import BucketSelector from '../components/BucketSelector';
 import GrafanaLink from '../components/GrafanaLink';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
-import { formatLatencyMs } from '../utils/monitoring';
+import { formatCost, formatLatencyMs } from '../utils/monitoring';
 
 type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
 type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
@@ -77,10 +77,6 @@ const externalLinkIcon = (
     <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 );
-
-function formatCost(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
 
 function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -349,9 +345,7 @@ function LlmMonitoring() {
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name={t('llmMonitoring.prompt')} />
@@ -380,9 +374,7 @@ function LlmMonitoring() {
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Bar dataKey="requests" fill={chartColors.blue} name={t('llmMonitoring.requests')} />
               </BarChart>
@@ -552,9 +544,7 @@ function LlmMonitoring() {
                 <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Bar dataKey="count" name={t('llmMonitoring.requests')}>
                   {(statusCodesQuery.data ?? []).map((entry, index) => (
@@ -585,9 +575,7 @@ function LlmMonitoring() {
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Bar dataKey="success" stackId="status" fill={chartColors.green} name={t('llmMonitoring.success')} />

@@ -16,6 +16,7 @@ import {
 import ResourceModal from '../components/ResourceModal';
 import { useToast } from '../components/useToast';
 import { formatKST } from '../utils/time';
+import { apiErrorDetail } from '../utils/apiError';
 import './McpSettings.css';
 
 const SERVERS_KEY = ['mcp-servers'];
@@ -32,20 +33,6 @@ const STATUS_BADGE: Record<McpRemoteToolStatus, string> = {
   changed: 'badge mcp-badge-warn',
   invalid_name: 'badge badge-error',
 };
-
-/** The API's `detail`: a message, or FastAPI's list of validation errors. */
-function apiErrorMessage(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object' || !('response' in error)) return undefined;
-  const detail = (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    const messages = detail
-      .map((item) => (item && typeof item === 'object' && 'msg' in item ? String(item.msg) : ''))
-      .filter(Boolean);
-    return messages.length > 0 ? messages.join('; ') : undefined;
-  }
-  return undefined;
-}
 
 function httpStatus(error: unknown): number | undefined {
   if (error && typeof error === 'object' && 'response' in error) {
@@ -162,7 +149,7 @@ function McpServerModal({
         addToast({
           type: 'error',
           title: t('mcp.ext.createdRefreshFailed', { name: saved.name }),
-          message: apiErrorMessage(refreshError),
+          message: apiErrorDetail(refreshError),
         });
       } else {
         addToast({
@@ -174,7 +161,7 @@ function McpServerModal({
     },
     onError: (err) => {
       setFetching(false);
-      setError(apiErrorMessage(err) ?? t('common.errorOccurred'));
+      setError(apiErrorDetail(err) ?? t('common.errorOccurred'));
     },
   });
 
@@ -228,7 +215,7 @@ function McpServerModal({
         <div className="form-grid">
           {server === null && (
             <div className="form-group form-group--full">
-              <label htmlFor="mcp-ext-name">{t('mcp.ext.name')}</label>
+              <label htmlFor="mcp-ext-name">{t('common.name')}</label>
               <input
                 id="mcp-ext-name"
                 type="text"
@@ -460,7 +447,7 @@ function McpServerDeleteModal({
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
       onClose();
     },
-    onError: (err) => setError(apiErrorMessage(err) ?? t('mcp.ext.deleteFailed', { name: server.name })),
+    onError: (err) => setError(apiErrorDetail(err) ?? t('mcp.ext.deleteFailed', { name: server.name })),
   });
 
   return (
@@ -760,7 +747,7 @@ function McpServerTools({
       // A refresh changed some of them since they were loaded; nothing was
       // approved. Reload the listing (this table starts over, so the panel
       // keeps the message) for a new review.
-      onStale(apiErrorMessage(err) ?? '');
+      onStale(apiErrorDetail(err) ?? '');
       queryClient.invalidateQueries({ queryKey: SERVERS_KEY });
     },
   });
@@ -906,7 +893,7 @@ function McpServerTools({
         <div className="mcp-ext-approve-bar">
           {approveMut.isError && httpStatus(approveMut.error) !== 409 && (
             <span className="save-error" role="alert">
-              {apiErrorMessage(approveMut.error) ?? t('mcp.ext.approvalsFailed')}
+              {apiErrorDetail(approveMut.error) ?? t('mcp.ext.approvalsFailed')}
             </span>
           )}
           <span className={dirty ? 'settings-save-status settings-save-status--changed' : 'settings-save-status'}>
@@ -979,7 +966,7 @@ function McpServerPanel({
       addToast({
         type: 'error',
         title: t('mcp.ext.refreshFailed', { name: server.name }),
-        message: apiErrorMessage(err),
+        message: apiErrorDetail(err),
       });
     },
   });

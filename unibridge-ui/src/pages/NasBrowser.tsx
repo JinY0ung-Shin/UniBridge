@@ -11,34 +11,13 @@ import {
   type NasEntryMetadata,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCopyFeedback } from '../components/useCopyFeedback';
 import ResourceModal from '../components/ResourceModal';
 import { isSvg, looksLikeSvgMarkup, rasterizeSvg } from '../utils/svgPreview';
 import { formatKST } from '../utils/time';
+import { formatBytes } from '../utils/bytes';
+import { saveBlob } from '../utils/download';
 import './NasBrowser.css';
-
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return '—';
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-}
-
-/** Push an already-fetched blob to disk under `filename`. */
-function saveBlob(blob: Blob, filename: string): void {
-  const url = window.URL.createObjectURL(blob);
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } finally {
-    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
-  }
-}
 
 /* ── In-browser preview ──────────────────────────────────────────────────── */
 
@@ -229,8 +208,11 @@ function NasBrowser() {
   const [selection, setSelection] = useState<Selection>({ key: '', paths: new Set() });
   const [batchDownloading, setBatchDownloading] = useState(false);
   const [apiExamplesOpen, setApiExamplesOpen] = useState(false);
-  const [apiExamplesCopied, setApiExamplesCopied] = useState(false);
-  const apiExamplesCopyTimeoutRef = useRef<number | null>(null);
+  const {
+    copied: apiExamplesCopied,
+    copy: copyApiExamples,
+    reset: resetApiExamplesCopied,
+  } = useCopyFeedback(() => addToast({ type: 'error', title: t('nas.copyFailed') }));
 
   // Separator cannot appear in an alias, path, or search term.
   const listingKey = [alias ?? '', path, search].join('\u0000');
@@ -477,47 +459,19 @@ function NasBrowser() {
   }
 
   function openApiExamples() {
-    clearApiExamplesCopyTimer();
-    setApiExamplesCopied(false);
+    resetApiExamplesCopied();
     setApiExamplesOpen(true);
   }
 
   function closeApiExamples() {
-    clearApiExamplesCopyTimer();
-    setApiExamplesCopied(false);
+    resetApiExamplesCopied();
     setApiExamplesOpen(false);
   }
 
-  function clearApiExamplesCopyTimer() {
-    if (apiExamplesCopyTimeoutRef.current !== null) {
-      window.clearTimeout(apiExamplesCopyTimeoutRef.current);
-      apiExamplesCopyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearApiExamplesCopyTimer();
-    };
-  }, []);
-
-  async function handleCopyApiExamples() {
+  function handleCopyApiExamples() {
     if (!alias) return;
     const examples = buildNasApiExamples(alias, path, files, search);
-    try {
-      clearApiExamplesCopyTimer();
-      await navigator.clipboard.writeText(
-        examples.map((example) => `${t(example.labelKey)}\n${example.curl}`).join('\n\n'),
-      );
-      setApiExamplesCopied(true);
-      apiExamplesCopyTimeoutRef.current = window.setTimeout(() => {
-        setApiExamplesCopied(false);
-        apiExamplesCopyTimeoutRef.current = null;
-      }, 2000);
-    } catch {
-      setApiExamplesCopied(false);
-      addToast({ type: 'error', title: t('nas.copyFailed') });
-    }
+    void copyApiExamples(examples.map((example) => `${t(example.labelKey)}\n${example.curl}`).join('\n\n'));
   }
 
   function loadMore() {
@@ -602,8 +556,8 @@ function NasBrowser() {
             <button
               type="button"
               className="nas-search-clear"
-              aria-label={t('nas.clearSearch')}
-              title={t('nas.clearSearch')}
+              aria-label={t('common.clearSearch')}
+              title={t('common.clearSearch')}
               onClick={() => setSearchInput('')}
             >
               &times;
@@ -891,10 +845,10 @@ function NasBrowser() {
                 onClick={handleCopyApiExamples}
                 aria-label={apiExamplesCopied ? t('nas.apiExamplesCopiedLabel') : t('nas.apiExamplesCopyLabel')}
               >
-                {apiExamplesCopied ? t('nas.apiExamplesCopied') : t('nas.apiExamplesCopy')}
+                {apiExamplesCopied ? t('common.copied') : t('nas.apiExamplesCopy')}
               </button>
               <span className="visually-hidden" role="status" aria-live="polite">
-                {apiExamplesCopied ? t('nas.apiExamplesCopied') : ''}
+                {apiExamplesCopied ? t('common.copied') : ''}
               </span>
             </div>
           </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatLatencyMs, formatSeconds, hasLatencyValues, secondsTooltipFormatter, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
+import { compactNumber, formatCost, formatLatencyMs, formatSeconds, hasLatencyValues, secondsTooltipFormatter, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
 import { formatBucketLabel, formatChartTimestamp } from '../utils/time';
 
 // 2026-09-24 14:00 KST
@@ -17,6 +17,21 @@ describe('formatSeconds', () => {
   it('formats numeric tooltip values and passes others through', () => {
     expect(secondsTooltipFormatter(0.25)).toBe('0.25s');
     expect(secondsTooltipFormatter(null)).toBe('');
+  });
+});
+
+describe('compactNumber / formatCost', () => {
+  it('compacts counts to K and M', () => {
+    expect(compactNumber(999)).toBe('999');
+    expect(compactNumber(12.4)).toBe('12');
+    expect(compactNumber(1_234)).toBe('1.2K');
+    // millions are M, not "2500.0K"
+    expect(compactNumber(2_500_000)).toBe('2.5M');
+  });
+
+  it('shows cost in dollars with cents', () => {
+    expect(formatCost(0)).toBe('$0.00');
+    expect(formatCost(12.345)).toBe('$12.35');
   });
 });
 

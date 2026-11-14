@@ -5,7 +5,6 @@ import {
   isMuteActive,
   muteKeyFor,
   ownMuteFor,
-  resolveRowMute,
   ruleTargetCounts,
   ruleTypeLabel,
   RULE_TYPES,
@@ -23,6 +22,8 @@ function entry(overrides: Partial<AlertStatus> = {}): AlertStatus {
     type: 'db_health',
     status: 'alert',
     since: null,
+    muted: false,
+    muted_until: null,
     // the backend sends the mute key on every row; `type`/`target` never key a mute
     resource_type: 'db',
     resource_id: 'db1',
@@ -62,7 +63,7 @@ describe('muteKeyFor', () => {
     // both would be wrong: server_down is a rule id, and target is a label
     expect(
       muteKeyFor(entry({
-        type: 'server_down', target: 'node-1', resource_type: undefined, resource_id: undefined,
+        type: 'server_down', target: 'node-1', resource_type: null, resource_id: null,
       })),
     ).toBeNull();
   });
@@ -89,32 +90,6 @@ describe('muteKeyFor', () => {
     expect(muteKeyFor(row)).toEqual({ resource_type: 'service', resource_id: 'payments' });
     // the rule identifier is still what the history filter and cards match on
     expect(ruleTargetCounts([row], EXTERNAL_SERVICE_DOWN_RULE)).toEqual({ total: 1, down: 1 });
-  });
-});
-
-describe('resolveRowMute', () => {
-  it('trusts the row flag when the backend sends one', () => {
-    expect(resolveRowMute(entry({ muted: true, muted_until: FUTURE }), [], NOW)).toEqual({
-      muted: true,
-      mutedUntil: FUTURE,
-    });
-    // an explicit false wins over a stale entry in the mute list
-    expect(resolveRowMute(entry({ muted: false }), [mute()], NOW).muted).toBe(false);
-  });
-
-  it('derives state from the mute list when the row omits it', () => {
-    expect(resolveRowMute(entry(), [mute()], NOW)).toEqual({ muted: true, mutedUntil: FUTURE });
-  });
-
-  it('ignores expired and non-matching mutes', () => {
-    expect(resolveRowMute(entry(), [mute({ muted_until: PAST })], NOW).muted).toBe(false);
-    expect(resolveRowMute(entry(), [mute({ resource_id: 'other' })], NOW).muted).toBe(false);
-    expect(resolveRowMute(entry(), [], NOW)).toEqual({ muted: false, mutedUntil: null });
-  });
-
-  it('reports an un-mutable row as unmuted', () => {
-    const row = entry({ resource_type: null, resource_id: null });
-    expect(resolveRowMute(row, [mute()], NOW)).toEqual({ muted: false, mutedUntil: null });
   });
 });
 
@@ -147,7 +122,7 @@ describe('alertBadgeCounts', () => {
       entry({ target: 'ok-1', status: 'ok' }),
       entry({ target: 'ok-2', status: 'ok', muted: true }),
     ];
-    expect(alertBadgeCounts(items, [], NOW)).toEqual({ firing: 0, mutedFiring: 0 });
+    expect(alertBadgeCounts(items)).toEqual({ firing: 0, mutedFiring: 0 });
   });
 
   it('splits firing rows by mute state', () => {
@@ -156,18 +131,7 @@ describe('alertBadgeCounts', () => {
       entry({ target: 'loud-2', type: 'server_down' }),
       entry({ target: 'quiet', muted: true, muted_until: FUTURE }),
     ];
-    expect(alertBadgeCounts(items, [], NOW)).toEqual({ firing: 2, mutedFiring: 1 });
-  });
-
-  it('honours mutes supplied only through the mute list', () => {
-    const items = [
-      entry({ target: 'db1', resource_id: 'db1' }),
-      entry({ target: 'db2', resource_id: 'db2' }),
-    ];
-    expect(alertBadgeCounts(items, [mute({ resource_id: 'db1' })], NOW)).toEqual({
-      firing: 1,
-      mutedFiring: 1,
-    });
+    expect(alertBadgeCounts(items)).toEqual({ firing: 2, mutedFiring: 1 });
   });
 });
 

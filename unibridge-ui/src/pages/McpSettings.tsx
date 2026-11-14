@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -18,6 +18,7 @@ import ResourceModal from '../components/ResourceModal';
 import McpExternalServers from './McpExternalServers';
 import { useCanWrite } from '../components/useCanWrite';
 import { useToast } from '../components/useToast';
+import { useCopyFeedback } from '../components/useCopyFeedback';
 import './QuerySettings.css';
 import './McpSettings.css';
 
@@ -232,7 +233,7 @@ function McpTemplateExposure({
                     {template.name} · {template.database}
                   </span>
                   {!template.enabled && (
-                    <span className="badge badge-error">{t('mcp.templateDisabled')}</span>
+                    <span className="badge badge-error">{t('common.disabled')}</span>
                   )}
                 </label>
               </li>
@@ -727,27 +728,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
 function CopyBlock({ label, text }: { label: string; text: string }) {
   const { t } = useTranslation();
   const { addToast } = useToast();
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-  }, []);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-      timerRef.current = window.setTimeout(() => {
-        setCopied(false);
-        timerRef.current = null;
-      }, 2000);
-    } catch {
-      setCopied(false);
-      addToast({ type: 'error', title: t('mcp.copyFailed') });
-    }
-  }
+  const { copied, copy } = useCopyFeedback(() => addToast({ type: 'error', title: t('mcp.copyFailed') }));
 
   return (
     <section className="mcp-snippet">
@@ -756,10 +737,10 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
         <button
           type="button"
           className="btn btn-secondary btn-sm"
-          onClick={handleCopy}
-          aria-label={`${t('mcp.copy')}: ${label}`}
+          onClick={() => void copy(text)}
+          aria-label={`${t('common.copy')}: ${label}`}
         >
-          {copied ? t('mcp.copied') : t('mcp.copy')}
+          {copied ? t('common.copied') : t('common.copy')}
         </button>
       </div>
       <pre className="mcp-code">{text}</pre>
@@ -930,7 +911,7 @@ function McpToolPreview() {
                     <thead>
                       <tr>
                         <th>{t('mcp.colTemplate')}</th>
-                        <th>{t('mcp.colName')}</th>
+                        <th>{t('common.name')}</th>
                         <th>{t('mcp.colDatabase')}</th>
                       </tr>
                     </thead>

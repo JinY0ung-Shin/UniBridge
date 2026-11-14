@@ -151,7 +151,8 @@ describe('ConfigTransfer', () => {
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob)), WAIT);
     expect(mockedExportConfig).toHaveBeenCalledOnce();
     expect(click).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:config');
+    // revoked a moment after the click (utils/download.ts REVOKE_DELAY_MS)
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:config'), WAIT);
 
     const anchor = click.mock.contexts[0] as HTMLAnchorElement;
     expect(anchor.download).toMatch(/^unibridge-config-\d{8}\.json$/);

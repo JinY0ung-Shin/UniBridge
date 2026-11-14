@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -6,9 +6,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getQueryTemplateGuide } from '../../api/client';
 import ResourceModal from '../../components/ResourceModal';
-import { extractErrorDetail } from '../../components/useResourceMutation';
 import { usePermissions } from '../../components/usePermissions';
 import { useToast } from '../../components/useToast';
+import { useCopyFeedback } from '../../components/useCopyFeedback';
+import { apiErrorDetail } from '../../utils/apiError';
 import './AgentApiModal.css';
 
 // Gateway route IDs provisioned at boot (unibridge-service main.py). query-api
@@ -33,8 +34,9 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const { permissions } = usePermissions();
   const { addToast } = useToast();
-  const [copied, setCopied] = useState<CopyTarget | null>(null);
-  const copyTimeoutRef = useRef<number | null>(null);
+  const { copiedKey: copied, copy } = useCopyFeedback<CopyTarget>(
+    () => addToast({ type: 'error', title: t('queryTemplates.agentApiCopyFailed') }),
+  );
   const [guideOpen, setGuideOpen] = useState(false);
 
   const guideQuery = useQuery({
@@ -46,14 +48,6 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
     // and expanding again refetches.
     retry: false,
   });
-
-  useEffect(() => {
-    return () => {
-      if (copyTimeoutRef.current !== null) {
-        window.clearTimeout(copyTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const base = `${window.location.origin}/api/query/templates`;
   const handoffText = [
@@ -100,31 +94,10 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
     : hasSelfKeyOnly
       ? { to: '/my-api-key', label: t('nav.myApiKey') }
       : null;
-  const guideErrorDetail = guideQuery.isError ? extractErrorDetail(guideQuery.error) : undefined;
+  const guideErrorDetail = guideQuery.isError ? apiErrorDetail(guideQuery.error) : undefined;
 
-  function clearCopyTimeout() {
-    if (copyTimeoutRef.current !== null) {
-      window.clearTimeout(copyTimeoutRef.current);
-      copyTimeoutRef.current = null;
-    }
-  }
-
-  async function handleCopy(target: CopyTarget, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      // Cleared after the await so an earlier copy that resolved meanwhile
-      // cannot leave its timer running and reset this one early.
-      clearCopyTimeout();
-      setCopied(target);
-      copyTimeoutRef.current = window.setTimeout(() => {
-        setCopied(null);
-        copyTimeoutRef.current = null;
-      }, 2000);
-    } catch {
-      clearCopyTimeout();
-      setCopied(null);
-      addToast({ type: 'error', title: t('queryTemplates.agentApiCopyFailed') });
-    }
+  function handleCopy(target: CopyTarget, text: string) {
+    void copy(text, target);
   }
 
   return (
@@ -148,7 +121,7 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
                 copied === 'handoff' ? t('queryTemplates.agentApiCopiedHandoff') : t('queryTemplates.agentApiCopyHandoff')
               }
             >
-              {copied === 'handoff' ? t('queryTemplates.agentApiCopied') : t('queryTemplates.agentApiCopy')}
+              {copied === 'handoff' ? t('common.copied') : t('common.copy')}
             </button>
           </div>
           <p className="agent-api-hint">{t('queryTemplates.agentApiHandoffHint')}</p>
@@ -218,9 +191,9 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
               type="button"
               className="btn btn-sm btn-secondary"
               onClick={() => handleCopy('curl', curlText)}
-              aria-label={copied === 'curl' ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
+              aria-label={copied === 'curl' ? t('common.curlCopied') : t('common.copyCurl')}
             >
-              {copied === 'curl' ? t('queryTemplates.agentApiCopied') : t('queryTemplates.agentApiCopy')}
+              {copied === 'curl' ? t('common.copied') : t('common.copy')}
             </button>
           </div>
           <pre className="agent-api-code">{curlText}</pre>
@@ -272,7 +245,7 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
         </section>
 
         <span className="visually-hidden" role="status" aria-live="polite">
-          {copied ? t('queryTemplates.agentApiCopied') : ''}
+          {copied ? t('common.copied') : ''}
         </span>
       </div>
     </ResourceModal>

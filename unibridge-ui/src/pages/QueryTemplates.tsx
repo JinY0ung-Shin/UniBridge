@@ -18,6 +18,7 @@ import {
 } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
 import { formatKST } from '../utils/time';
+import { errorMessage } from '../utils/apiError';
 import AgentApiModal from './queryTemplates/AgentApiModal';
 import './QueryTemplates.css';
 
@@ -52,19 +53,6 @@ const emptyForm: TemplateFormState = {
   sample_params: '',
   monitor_enabled: true,
 };
-
-function errorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    // A 422 carries a list of field errors, not a sentence: nothing to render as text.
-    const axiosErr = err as { response?: { data?: { detail?: unknown } } };
-    const detail = axiosErr.response?.data?.detail;
-    return typeof detail === 'string' && detail ? detail : fallback;
-  }
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return fallback;
-}
 
 function templateToForm(template: QueryTemplate): TemplateFormState {
   return {

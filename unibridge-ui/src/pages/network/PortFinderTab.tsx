@@ -11,7 +11,8 @@ import {
   type RequestedPortStatus,
 } from '../../api/network';
 import { useToast } from '../../components/useToast';
-import { intOrUndefined, NETWORK_KEY, networkErrorMessage, portRange } from './networkUtils';
+import { intOrUndefined, NETWORK_KEY, portRange } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 import { useAllNetworkHosts } from './useNetworkActions';
 import PortStrip from './PortStrip';
 
@@ -351,7 +352,7 @@ function PortFinderTab() {
       </form>
 
       {find.isError && (
-        <div className="error-banner" role="alert">{networkErrorMessage(find.error, t('common.errorOccurred'))}</div>
+        <div className="error-banner" role="alert">{apiErrorMessage(find.error, t('common.errorOccurred'))}</div>
       )}
 
       {result && (
@@ -403,7 +404,7 @@ function PortFinderTab() {
                       <table className="data-table" aria-label={t('network.finder.sameRegion', { count: sameRegion.length })}>
                         <thead>
                           <tr>
-                            <th scope="col">{t('network.hosts.name')}</th>
+                            <th scope="col">{t('common.name')}</th>
                             <th scope="col">{t('network.region')}</th>
                             <th scope="col">{t('network.finder.usedPorts')}</th>
                             {lastPort != null && <th scope="col">{t('network.finder.wantedPort')}</th>}

@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { apiErrorMessage } from '../utils/apiError';
 import './GatewayRouteForm.css';
 
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
@@ -37,9 +38,7 @@ function makeRowKey(): string {
 }
 
 function routeServiceKeys(route: GatewayRoute | undefined) {
-  if (!route) return [];
-  if (route.service_keys?.length) return route.service_keys;
-  return route.service_key ? [route.service_key] : [];
+  return route?.service_keys ?? [];
 }
 
 function initialServiceKeys(route: GatewayRoute | undefined): ServiceKeyRow[] {
@@ -134,12 +133,7 @@ function GatewayRouteEditor({
       navigate('/gateway/routes');
     },
     onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? t('gatewayRouteForm.saveFailed'));
-      } else {
-        setError(t('gatewayRouteForm.saveFailed'));
-      }
+      setError(apiErrorMessage(err, t('gatewayRouteForm.saveFailed')));
     },
   });
 

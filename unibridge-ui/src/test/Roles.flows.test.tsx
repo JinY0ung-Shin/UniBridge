@@ -136,6 +136,20 @@ describe('Roles page flows', () => {
     await waitFor(() => expect(screen.getByText('name taken')).toBeInTheDocument());
   });
 
+  it('create shows a 422 validation list as text', async () => {
+    mocks.create.mockRejectedValue({
+      response: { status: 422, data: { detail: [{ loc: ['body', 'name'], msg: 'String should match pattern' }] } },
+    });
+    renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('admin')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Add Role|역할 추가/i }));
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    const nameInput = roleNameInput();
+    await userEvent.type(nameInput, 'bad name');
+    fireEvent.submit(nameInput.closest('form')!);
+    await waitFor(() => expect(screen.getByText('String should match pattern')).toBeInTheDocument());
+  });
+
   it('create generic error shows fallback', async () => {
     mocks.create.mockRejectedValue(new Error('boom'));
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });

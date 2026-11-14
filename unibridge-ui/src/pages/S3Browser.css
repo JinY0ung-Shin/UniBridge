@@ -41,7 +41,7 @@
 .s3-breadcrumb {
   background: none;
   border: none;
-  color: var(--text-link);
+  color: var(--accent-blue);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 3px;
@@ -125,7 +125,7 @@
 }
 
 .s3-row-folder:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--accent-blue);
   outline-offset: -2px;
   background: var(--bg-hover);
 }
@@ -141,7 +141,7 @@
   display: inline-block;
   width: 16px;
   height: 16px;
-  background: var(--color-warning, #f59e0b);
+  background: var(--accent-yellow);
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 3h5l2 2h7v9H1V3z'/%3E%3C/svg%3E") center/contain no-repeat;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 3h5l2 2h7v9H1V3z'/%3E%3C/svg%3E") center/contain no-repeat;
   flex-shrink: 0;

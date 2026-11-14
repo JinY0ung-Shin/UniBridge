@@ -21,7 +21,8 @@ import {
 import { getServers } from '../../api/client';
 import ResourceModal from '../../components/ResourceModal';
 import { usePermissions } from '../../components/usePermissions';
-import { NETWORK_KEY, intOrUndefined, networkErrorMessage } from './networkUtils';
+import { NETWORK_KEY, intOrUndefined } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 import { useAllNetworkHosts, useRegions } from './useNetworkActions';
 
 /** Save mutation for a modal form: shows the backend's reason inside the form. */
@@ -36,7 +37,7 @@ function useFormSave<TVars>(mutationFn: (vars: TVars) => Promise<unknown>, onDon
       queryClient.invalidateQueries({ queryKey: NETWORK_KEY });
       onDone();
     },
-    onError: (err) => setError(networkErrorMessage(err, t('network.saveFailed'))),
+    onError: (err) => setError(apiErrorMessage(err, t('network.saveFailed'))),
   });
   return { mutation, error };
 }
@@ -259,7 +260,7 @@ export function OpeningFormModal({ opening, defaults, onClose }: OpeningFormModa
         </select>
       </div>
       <div className="form-group">
-        <label htmlFor="opening-status">{t('network.openings.status')}</label>
+        <label htmlFor="opening-status">{t('common.status')}</label>
         <select
           id="opening-status"
           value={form.status}
@@ -453,7 +454,7 @@ export function HostFormModal({ host, onClose }: HostFormModalProps) {
       onSubmit={submit}
     >
       <div className="form-group">
-        <label htmlFor="host-name">{t('network.hosts.name')}</label>
+        <label htmlFor="host-name">{t('common.name')}</label>
         <input id="host-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
       </div>
       <div className="form-group">

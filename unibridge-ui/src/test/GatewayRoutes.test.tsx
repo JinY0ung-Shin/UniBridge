@@ -107,23 +107,6 @@ describe('GatewayRoutes', () => {
     expect(screen.getAllByText('Hidden')).toHaveLength(2);
   });
 
-  it('renders legacy service key when service_keys is absent', async () => {
-    const route = makeGatewayRoute({
-      service_key: { header_name: 'X-Legacy-Key', header_value: '***9999' },
-      service_keys: undefined,
-    });
-    mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });
-
-    renderWithProviders(<GatewayRoutes />);
-
-    await waitFor(() => {
-      expect(screen.getByText('X-Legacy-Key')).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText('***9999')).not.toBeInTheDocument();
-    expect(screen.getByText('Hidden')).toBeInTheDocument();
-  });
-
   it('renders empty state when no routes', async () => {
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
 
@@ -421,7 +404,8 @@ describe('GatewayRoutes', () => {
     await waitFor(() => expect(mockedGetGatewayOpenApiSpec).toHaveBeenCalledOnce());
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(click).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:openapi');
+    // revoked a moment after the click (utils/download.ts REVOKE_DELAY_MS)
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:openapi'), { timeout: 3000 });
 
     mockedGetGatewayOpenApiSpec.mockRejectedValueOnce(new Error('spec unavailable'));
     await user.click(screen.getByRole('button', { name: 'OpenAPI Spec' }));

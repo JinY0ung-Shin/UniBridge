@@ -226,6 +226,27 @@ describe('QueryPlayground', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Permission denied');
   });
 
+  it('shows a 422 validation list as text', async () => {
+    const user = userEvent.setup();
+
+    mockGetDatabases.mockResolvedValue([makeDatabase()]);
+    mockExecuteQuery.mockRejectedValue({
+      response: { status: 422, data: { detail: [{ loc: ['body', 'sql'], msg: 'String should have at most 100000 characters' }] } },
+    });
+
+    renderWithProviders(<QueryPlayground />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'test-db' })).toBeInTheDocument();
+    });
+
+    await user.selectOptions(screen.getByRole('combobox'), 'test-db');
+    await user.type(sqlEditor(), 'SELECT 1');
+    await user.click(screen.getByRole('button', { name: /execute/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('String should have at most 100000 characters');
+  });
+
   it('announces truncated query results as an alert', async () => {
     const user = userEvent.setup();
 

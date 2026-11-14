@@ -153,12 +153,6 @@
   white-space: nowrap;
 }
 
-.cell-target {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-primary);
-}
-
 /* ── Resource owner groups ─────────────────────────────────────────────────── */
 
 .resource-owner-groups {
@@ -249,7 +243,7 @@
   height: 20px;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: var(--border-strong);
+  background: var(--border-hover);
   transition: background 0.15s ease;
 }
 
@@ -289,43 +283,6 @@
   }
 }
 
-/* ── Rule type badges ──────────────────────────────────────────────────────── */
-
-.rule-type-badge {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-}
-
-.rule-type-badge--db_health {
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  color: var(--accent-blue);
-}
-
-.rule-type-badge--nas_health {
-  background: color-mix(in srgb, #0d9488 12%, transparent);
-  color: #0d9488;
-}
-
-.rule-type-badge--upstream_health {
-  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
-  color: var(--accent-green);
-}
-
-.rule-type-badge--error_rate {
-  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
-  color: var(--accent-red);
-}
-
-.rule-type-badge--template_health {
-  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
-  color: var(--accent-yellow);
-}
-
 /* ── Modal form overrides ──────────────────────────────────────────────────── */
 
 .form-textarea {
@@ -344,13 +301,6 @@
 .form-textarea:focus {
   outline: none;
   border-color: var(--accent-blue);
-}
-
-.form-hint {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin: 4px 0 0;
-  line-height: 1.4;
 }
 
 /* ── Email list textareas (admins / assignees) ─────────────────────────────── */

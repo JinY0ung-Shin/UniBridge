@@ -1,6 +1,7 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import keycloak from '../keycloak';
 import { type TimeSelection, type Bucket, DEFAULT_SELECTION, timeParams, bucketParam } from '../utils/timeRange';
+import { detailText } from '../utils/apiError';
 export type { TimeSelection, Bucket } from '../utils/timeRange';
 
 const API_BASE = '/_api';
@@ -770,7 +771,6 @@ export interface GatewayRoute {
   strip_prefix?: boolean;
   timeout_seconds?: number | null;
   timeout_override?: boolean;
-  service_key?: GatewayServiceKey | null;
   service_keys?: GatewayServiceKey[];
   plugins?: Record<string, unknown>;
   system?: boolean;
@@ -1512,17 +1512,16 @@ export interface AlertStatus {
   status: 'ok' | 'alert';
   since: string | null;
   severity?: string | null;
-  /** Mute state. Absent on backends without the mute feature — treat as false. */
-  muted?: boolean;
-  muted_until?: string | null;
+  /** True while a mute (the row's own or the global one) silences the row. */
+  muted: boolean;
+  muted_until: string | null;
   /**
    * Addressable mute key, sent as a pair. `type` above is a rule id and
    * `target` a display label, so neither can address a mute — only these two
-   * fields can. Null (rule with no mutable resource) or absent (backend
-   * predating mutes) both mean "not mutable". See `muteKeyFor`.
+   * fields can. Null means the rule has no mutable resource. See `muteKeyFor`.
    */
-  resource_type?: string | null;
-  resource_id?: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
 }
 
 /** Normalized `/admin/alerts/status` payload; see `getAlertStatus`. */
@@ -1628,17 +1627,9 @@ export async function getAlertHistory(params?: {
   return data;
 }
 
-/**
- * Alert status, normalized to `{ items, global_muted_until }`.
- *
- * Backends predating the mute feature answer with a bare array and have no
- * global mute, so that shape is widened here rather than at every call site.
- */
+/** Alert status rows plus the global mute window. */
 export async function getAlertStatus(): Promise<AlertStatusResult> {
   const { data } = await client.get('/admin/alerts/status');
-  if (Array.isArray(data)) {
-    return { items: data, global_muted_until: null };
-  }
   return {
     items: Array.isArray(data?.items) ? data.items : [],
     global_muted_until: data?.global_muted_until ?? null,
@@ -2335,15 +2326,14 @@ export async function downloadNasZip(
  * Pull the FastAPI `detail` out of a failed blob request. With
  * `responseType: 'blob'` axios hands back the *error* body as a Blob too, so
  * the JSON has to be read out of it before it can be shown. Returns undefined
- * whenever the body is not a readable JSON detail string.
+ * whenever the body carries no readable JSON detail.
  */
 export async function readBlobErrorDetail(error: unknown): Promise<string | undefined> {
   const data = (error as { response?: { data?: unknown } } | null)?.response?.data;
   try {
     const text = data instanceof Blob ? await data.text() : null;
     const parsed: unknown = text !== null ? JSON.parse(text) : data;
-    const detail = (parsed as { detail?: unknown } | null)?.detail;
-    return typeof detail === 'string' ? detail : undefined;
+    return detailText((parsed as { detail?: unknown } | null)?.detail);
   } catch {
     return undefined;
   }

@@ -17,12 +17,12 @@ import {
   isMuteActive,
   muteKeyFor,
   ownMuteFor,
-  resolveRowMute,
   ruleTypeLabel,
   MAX_MUTE_DAYS,
   type MuteKey,
 } from '../utils/alerts';
 import { epochToKstLocal, formatKST, kstLocalToUtcIso } from '../utils/time';
+import { apiErrorDetail } from '../utils/apiError';
 import './AlertStatus.css';
 
 const MUTE_MUTES_QUERY_KEY = ['alert-mutes'];
@@ -66,15 +66,6 @@ function formatDuration(ts: string | null): string {
 
 function hoursFromNowIso(hours: number): string {
   return new Date(Date.now() + hours * 3_600_000).toISOString();
-}
-
-function muteErrorDetail(err: unknown): string | undefined {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const axiosErr = err as { response?: { data?: { detail?: unknown } } };
-    const detail = axiosErr.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-  }
-  return undefined;
 }
 
 interface MuteModalProps {
@@ -283,7 +274,7 @@ function AlertStatus() {
 
   const alerting = entries.filter((e) => e.status === 'alert');
   const healthy = entries.filter((e) => e.status === 'ok');
-  const counts = alertBadgeCounts(entries, mutes);
+  const counts = alertBadgeCounts(entries);
 
   function refreshMuteState() {
     queryClient.invalidateQueries({ queryKey: ALERT_STATUS_QUERY_KEY });
@@ -299,7 +290,7 @@ function AlertStatus() {
       addToast({ type: 'success', title: t('alerts.muteSaved') });
     },
     onError: (err) =>
-      addToast({ type: 'error', title: t('alerts.muteFailed'), message: muteErrorDetail(err) }),
+      addToast({ type: 'error', title: t('alerts.muteFailed'), message: apiErrorDetail(err) }),
   });
 
   const unmuteMutation = useMutation({
@@ -317,7 +308,7 @@ function AlertStatus() {
       });
     },
     onError: (err) =>
-      addToast({ type: 'error', title: t('alerts.muteFailed'), message: muteErrorDetail(err) }),
+      addToast({ type: 'error', title: t('alerts.muteFailed'), message: apiErrorDetail(err) }),
   });
 
   function isRowBusy(key: MuteKey): boolean {
@@ -334,12 +325,11 @@ function AlertStatus() {
 
   function renderMuteCell(entry: AlertStatusEntry) {
     const key = muteKeyFor(entry);
-    const { muted, mutedUntil } = resolveRowMute(entry, mutes);
     return (
       <MuteCell
         entry={entry}
-        muted={muted}
-        mutedUntil={mutedUntil}
+        muted={entry.muted}
+        mutedUntil={entry.muted_until}
         mutable={key !== null}
         hasOwnMute={ownMuteFor(entry, mutes) !== null}
         globalMuted={globalMuted}
@@ -462,7 +452,7 @@ function AlertStatus() {
                     {alerting.map((e, i) => (
                       <tr
                         key={`${e.type}:${e.target}:${i}`}
-                        className={resolveRowMute(e, mutes).muted ? 'status-row--muted' : ''}
+                        className={e.muted ? 'status-row--muted' : ''}
                       >
                         <td>
                           <span className={`rule-type-badge rule-type-badge--${e.type}`}>
@@ -512,7 +502,7 @@ function AlertStatus() {
                     {healthy.map((e, i) => (
                       <tr
                         key={`${e.type}:${e.target}:${i}`}
-                        className={resolveRowMute(e, mutes).muted ? 'status-row--muted' : ''}
+                        className={e.muted ? 'status-row--muted' : ''}
                       >
                         <td>
                           <span className={`rule-type-badge rule-type-badge--${e.type}`}>

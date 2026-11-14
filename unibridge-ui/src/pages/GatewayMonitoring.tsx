@@ -19,7 +19,7 @@ import {
   getApiKeys,
   type RouteComparisonRow,
 } from '../api/client';
-import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
+import { useChartTheme, statusCodeColor, chartTooltipProps } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
 import PanelStatus from '../components/PanelStatus';
@@ -386,9 +386,7 @@ function GatewayMonitoring() {
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
                   {...pointAxis.tooltip}
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
               </LineChart>
@@ -415,9 +413,7 @@ function GatewayMonitoring() {
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
                   {...volumeAxis.tooltip}
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Bar dataKey="requests" fill={chartColors.green} name={t('gatewayMonitoring.requests')} />
               </BarChart>
@@ -443,9 +439,7 @@ function GatewayMonitoring() {
                 <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Bar dataKey="count" name={t('gatewayMonitoring.requests')}>
                   {(statusQuery.data ?? []).map((entry, index) => (
@@ -478,9 +472,7 @@ function GatewayMonitoring() {
                 <Tooltip
                   formatter={secondsTooltipFormatter}
                   {...pointAxis.tooltip}
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={latencyDots.p50} name="P50" />
@@ -612,9 +604,7 @@ function GatewayMonitoring() {
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           {...pointAxis.tooltip}
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
                       </LineChart>
@@ -641,9 +631,7 @@ function GatewayMonitoring() {
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           {...volumeAxis.tooltip}
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Bar dataKey="requests" fill={chartColors.green} name={t('gatewayMonitoring.requests')} />
                       </BarChart>
@@ -669,9 +657,7 @@ function GatewayMonitoring() {
                         <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Bar dataKey="count" name={t('gatewayMonitoring.requests')}>
                           {(routeStatusQuery.data ?? []).map((entry, index) => (
@@ -704,9 +690,7 @@ function GatewayMonitoring() {
                         <Tooltip
                           formatter={secondsTooltipFormatter}
                           {...pointAxis.tooltip}
-                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                          labelStyle={{ color: chartColors.axis }}
-                          itemStyle={{ color: chartColors.textSecondary }}
+                          {...chartTooltipProps(chartColors)}
                         />
                         <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                         <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={routeLatencyDots.p50} name="P50" />

@@ -72,8 +72,7 @@ export const MAX_MUTE_DAYS = 30;
  * `type` is a rule id from the other namespace and `target` is a display label
  * (e.g. "checkout (r-1)"), so a key built from those would address the wrong
  * resource or be rejected outright. The pair is null together for a rule with
- * no mutable resource, and absent together on a backend predating mutes; both
- * mean the same thing here — no mute button.
+ * no mutable resource — no mute button.
  */
 export function muteKeyFor(item: AlertStatus): MuteKey | null {
   const { resource_type: resourceType, resource_id: resourceId } = item;
@@ -86,11 +85,6 @@ export function isMuteActive(value: string | null | undefined, now: number = Dat
   if (!value) return false;
   const until = new Date(value).getTime();
   return !Number.isNaN(until) && until > now;
-}
-
-export interface RowMuteState {
-  muted: boolean;
-  mutedUntil: string | null;
 }
 
 /**
@@ -118,23 +112,6 @@ export function ownMuteFor(
   );
 }
 
-/**
- * Mute state for one status row. The row's own `muted` flag wins when the
- * backend sends one; otherwise it is derived from the mute list so the page
- * still works against a backend that only exposes `/admin/alerts/mutes`.
- */
-export function resolveRowMute(
-  item: AlertStatus,
-  mutes: AlertMute[] = [],
-  now: number = Date.now(),
-): RowMuteState {
-  if (item.muted !== undefined) {
-    return { muted: item.muted, mutedUntil: item.muted_until ?? null };
-  }
-  const own = ownMuteFor(item, mutes, now);
-  return { muted: Boolean(own), mutedUntil: own?.muted_until ?? null };
-}
-
 export interface AlertBadgeCounts {
   /** Firing alerts that would still notify. */
   firing: number;
@@ -146,16 +123,12 @@ export interface AlertBadgeCounts {
  * Counts behind the sidebar badge and the dashboard card: firing alerts split
  * by whether a mute is suppressing them.
  */
-export function alertBadgeCounts(
-  items: AlertStatus[] | undefined,
-  mutes: AlertMute[] = [],
-  now: number = Date.now(),
-): AlertBadgeCounts {
+export function alertBadgeCounts(items: AlertStatus[] | undefined): AlertBadgeCounts {
   let firing = 0;
   let mutedFiring = 0;
   for (const item of items ?? []) {
     if (item.status !== 'alert') continue;
-    if (resolveRowMute(item, mutes, now).muted) mutedFiring += 1;
+    if (item.muted) mutedFiring += 1;
     else firing += 1;
   }
   return { firing, mutedFiring };

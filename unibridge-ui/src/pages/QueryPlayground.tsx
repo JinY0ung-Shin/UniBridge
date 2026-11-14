@@ -5,6 +5,7 @@ import { getDatabases, executeQuery, type QueryResult } from '../api/client';
 import QueryHistoryPanel from '../components/QueryHistoryPanel';
 import SavedQueriesPanel from '../components/SavedQueriesPanel';
 import SaveQueryModal from '../components/SaveQueryModal';
+import { errorMessage } from '../utils/apiError';
 import './QueryPlayground.css';
 
 type WorkspaceTab = 'history' | 'saved';
@@ -38,14 +39,7 @@ function QueryPlayground() {
     },
     onError: (err: unknown) => {
       setResult(null);
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? t('queryPlayground.executionFailed'));
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError(t('queryPlayground.executionFailed'));
-      }
+      setError(errorMessage(err, t('queryPlayground.executionFailed')));
     },
   });
 

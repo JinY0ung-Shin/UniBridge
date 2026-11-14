@@ -4,23 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { createSavedQuery } from '../api/client';
 import ResourceModal from './ResourceModal';
 import { useToast } from './useToast';
+import { errorMessage } from '../utils/apiError';
 
 interface SaveQueryModalProps {
   sql: string;
   databaseAlias: string | null;
   onClose: () => void;
-}
-
-function errorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const axiosErr = err as { response?: { data?: { detail?: string } } };
-    const detail = axiosErr.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-  }
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return fallback;
 }
 
 function SaveQueryModal({ sql, databaseAlias, onClose }: SaveQueryModalProps) {

@@ -10,6 +10,7 @@ import {
 import { usePermissions } from '../components/usePermissions';
 import { useToast } from '../components/useToast';
 import { formatKST } from '../utils/time';
+import { saveJson } from '../utils/download';
 import {
   documentSections,
   dryRunKey,
@@ -103,15 +104,7 @@ function ConfigTransfer() {
 
   const exportMut = useMutation({
     mutationFn: exportConfig,
-    onSuccess: (doc) => {
-      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = exportFileName();
-      a.click();
-      URL.revokeObjectURL(url);
-    },
+    onSuccess: (doc) => saveJson(doc, exportFileName()),
   });
 
   const dryRunMut = useMutation({

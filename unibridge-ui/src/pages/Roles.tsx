@@ -151,7 +151,7 @@ function Roles() {
         onAdd={openCreate}
         extra={roles.length > 0 ? (
           <input
-            className="role-search-input"
+            className="search-input"
             type="search"
             value={roleSearch}
             onChange={(event) => setRoleSearch(event.target.value)}

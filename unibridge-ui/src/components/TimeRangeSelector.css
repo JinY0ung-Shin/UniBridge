@@ -4,8 +4,8 @@
   max-width: 100%;
 }
 
-.time-range-btn--custom {
-  white-space: nowrap;
+.time-range-btn {
+  padding: 6px 14px;
 }
 
 .time-range-chip {

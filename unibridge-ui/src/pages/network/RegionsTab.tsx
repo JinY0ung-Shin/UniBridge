@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { createRegion, deleteRegion, updateRegion, type Region, type RegionInput } from '../../api/network';
 import ResourceModal from '../../components/ResourceModal';
 import { useCanWrite } from '../../components/useCanWrite';
-import { NETWORK_KEY, networkErrorMessage, splitList } from './networkUtils';
+import { NETWORK_KEY, splitList } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 import { useNetworkMutation, useRegions } from './useNetworkActions';
 
 function RegionFormModal({ region, onClose }: { region: Region | null; onClose: () => void }) {
@@ -23,7 +24,7 @@ function RegionFormModal({ region, onClose }: { region: Region | null; onClose: 
       queryClient.invalidateQueries({ queryKey: NETWORK_KEY });
       onClose();
     },
-    onError: (err) => setError(networkErrorMessage(err, t('network.saveFailed'))),
+    onError: (err) => setError(apiErrorMessage(err, t('network.saveFailed'))),
   });
 
   return (
@@ -40,7 +41,7 @@ function RegionFormModal({ region, onClose }: { region: Region | null; onClose: 
       >
         <div className="form-grid">
           <div className="form-group form-group--full">
-            <label htmlFor="region-name">{t('network.regions.name')}</label>
+            <label htmlFor="region-name">{t('common.name')}</label>
             <input id="region-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
           </div>
           <div className="form-group form-group--full">
@@ -103,7 +104,7 @@ function RegionsTab() {
           <table className="data-table network-table" aria-label={t('network.tabs.regions')}>
             <thead>
               <tr>
-                <th scope="col">{t('network.regions.name')}</th>
+                <th scope="col">{t('common.name')}</th>
                 <th scope="col">{t('network.description')}</th>
                 <th scope="col">{t('network.regions.cidrs')}</th>
                 <th scope="col">{t('network.regions.hostCount')}</th>

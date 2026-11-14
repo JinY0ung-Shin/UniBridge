@@ -289,6 +289,7 @@ describe('GatewayRouteForm', () => {
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [makeGatewayUpstream()], total: 1 });
     mockedSaveGatewayRoute
       .mockRejectedValueOnce({ response: { data: { detail: 'URI already exists' } } })
+      .mockRejectedValueOnce({ response: { status: 422, data: { detail: [{ loc: ['body', 'uri'], msg: 'bad uri' }] } } })
       .mockRejectedValueOnce(new Error('network'));
     const user = userEvent.setup();
     renderWithProviders(<GatewayRouteForm />);
@@ -299,6 +300,9 @@ describe('GatewayRouteForm', () => {
 
     await user.click(screen.getByRole('button', { name: 'Create Route' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('URI already exists');
+    // a 422 validation list renders as its messages instead of crashing the form
+    await user.click(screen.getByRole('button', { name: 'Create Route' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('bad uri');
     await user.click(screen.getByRole('button', { name: 'Create Route' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to save route');
     expect(navigateMock).not.toHaveBeenCalled();
@@ -501,11 +505,10 @@ describe('GatewayRouteForm', () => {
     });
   });
 
-  it('treats a renamed legacy key as new and submits its fresh secret', async () => {
+  it('treats a renamed existing key as new and submits its fresh secret', async () => {
     vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
     const route = makeGatewayRoute({
-      service_keys: undefined,
-      service_key: { header_name: 'X-Legacy', header_value: '***9999' },
+      service_keys: [{ header_name: 'X-Existing', header_value: '***9999' }],
     });
     mockedGetGatewayRoute.mockResolvedValue(route);
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [makeGatewayUpstream()], total: 1 });

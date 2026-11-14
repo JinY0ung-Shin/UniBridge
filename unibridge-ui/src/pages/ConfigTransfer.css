@@ -1,5 +1,5 @@
 /* Config export/import page. Reuses .settings-card / .settings-readonly-notice
-   from QuerySettings.css and .filter-select from AuditLogs.css. */
+   from QuerySettings.css and .filter-field / .filter-select from shared.css. */
 
 .config-transfer {
   max-width: var(--page-width-narrow);

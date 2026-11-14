@@ -15,6 +15,7 @@ import ResourceModal from './ResourceModal';
 import { useToast } from './useToast';
 import { useCanWrite } from './useCanWrite';
 import { scrapeStatusLabel } from '../utils/scrapeStatus';
+import { apiErrorDetail } from '../utils/apiError';
 
 interface FormState {
   name: string;
@@ -68,12 +69,7 @@ function ExternalServicesSection() {
   }
 
   const saveError = (err: unknown) => {
-    let message = '';
-    if (err && typeof err === 'object' && 'isAxiosError' in err) {
-      const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-      if (typeof detail === 'string') message = detail;
-    }
-    addToast({ type: 'error', title: t('externalServices.saveFailed'), message });
+    addToast({ type: 'error', title: t('externalServices.saveFailed'), message: apiErrorDetail(err) });
   };
 
   const createMutation = useMutation({
@@ -98,16 +94,11 @@ function ExternalServicesSection() {
     mutationFn: (id: number) => testExternalService(id),
     onSuccess: (data) => addToast({
       type: data.status === 'up' ? 'success' : 'error',
-      title: `${t('servers.statusLabel')}: ${scrapeStatusLabel(t, data.status)}`,
+      title: `${t('common.status')}: ${scrapeStatusLabel(t, data.status)}`,
       message: data.detail ?? undefined,
     }),
     onError: (err) => {
-      let message = '';
-      if (err && typeof err === 'object' && 'isAxiosError' in err) {
-        const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-        if (typeof detail === 'string') message = detail;
-      }
-      addToast({ type: 'error', title: t('servers.testFailed'), message });
+      addToast({ type: 'error', title: t('servers.testFailed'), message: apiErrorDetail(err) });
     },
   });
 
@@ -184,7 +175,7 @@ function ExternalServicesSection() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">{t('servers.statusLabel')}</th>
+                  <th scope="col">{t('common.status')}</th>
                   <th scope="col">{t('externalServices.name')}</th>
                   <th scope="col">{t('externalServices.address')}</th>
                   <th scope="col">{t('externalServices.metricsPath')}</th>
@@ -216,7 +207,7 @@ function ExternalServicesSection() {
                           disabled={testMutation.isPending}
                           aria-busy={isTesting}
                         >
-                          {isTesting ? t('common.testing') : t('servers.test')}
+                          {isTesting ? t('common.testing') : t('common.test')}
                         </button>
                         {canWrite && (
                           <>

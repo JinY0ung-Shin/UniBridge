@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -15,6 +15,7 @@ import {
   type ApiKeyScope,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCopyFeedback } from '../components/useCopyFeedback';
 import { useCanWrite } from '../components/useCanWrite';
 import { usePermissions } from '../components/usePermissions';
 import ResourceModal from '../components/ResourceModal';
@@ -75,12 +76,13 @@ function ApiKeys() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...emptyForm });
   const [createdKey, setCreatedKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy, reset: resetCopied } = useCopyFeedback(
+    () => addToast({ type: 'error', title: t('apiKeys.copyFailed') }),
+  );
   const [keySearch, setKeySearch] = useState('');
   // Your own keys by default; the switch widens the list to everyone's. Viewers
   // who cannot issue keys have none of their own, so they start on every key.
   const [showAll, setShowAll] = useState(() => !canWrite);
-  const copyTimeoutRef = useRef<number | null>(null);
 
   const scope: ApiKeyScope = showAll ? 'all' : 'mine';
   const keysQuery = useQuery({
@@ -165,30 +167,16 @@ function ApiKeys() {
         .includes(normalizedKeySearch))
     : keys;
 
-  function clearCopyTimer() {
-    if (copyTimeoutRef.current !== null) {
-      window.clearTimeout(copyTimeoutRef.current);
-      copyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCopyTimer();
-    };
-  }, []);
-
   function openCreate() {
-    clearCopyTimer();
+    resetCopied();
     setForm({ ...emptyForm, apiKey: generateKey() });
     setEditingName(null);
     setCreatedKey(null);
-    setCopied(false);
     setShowModal(true);
   }
 
   function openEdit(k: ApiKey) {
-    clearCopyTimer();
+    resetCopied();
     const isMaster = isMasterAccess(k);
     setForm({
       name: k.name,
@@ -205,16 +193,14 @@ function ApiKeys() {
     });
     setEditingName(k.name);
     setCreatedKey(null);
-    setCopied(false);
     setShowModal(true);
   }
 
   function closeModal() {
-    clearCopyTimer();
+    resetCopied();
     setShowModal(false);
     setEditingName(null);
     setCreatedKey(null);
-    setCopied(false);
   }
 
   function parseRateLimit(value: string): number | null {
@@ -275,21 +261,8 @@ function ApiKeys() {
     }
   }
 
-  async function handleCopy() {
-    if (createdKey) {
-      try {
-        clearCopyTimer();
-        await navigator.clipboard.writeText(createdKey);
-        setCopied(true);
-        copyTimeoutRef.current = window.setTimeout(() => {
-          setCopied(false);
-          copyTimeoutRef.current = null;
-        }, 2000);
-      } catch {
-        setCopied(false);
-        addToast({ type: 'error', title: t('apiKeys.copyFailed') });
-      }
-    }
+  function handleCopy() {
+    if (createdKey) void copy(createdKey);
   }
 
   function toggleDb(alias: string) {
@@ -351,7 +324,7 @@ function ApiKeys() {
         <div className="page-header__actions api-keys-header-actions">
           {keys.length > 0 && (
             <input
-              className="api-key-search-input"
+              className="search-input"
               type="search"
               value={keySearch}
               onChange={(event) => setKeySearch(event.target.value)}
@@ -391,7 +364,7 @@ function ApiKeys() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">{t('apiKeys.keyName')}</th>
+                  <th scope="col">{t('common.name')}</th>
                   <th scope="col">{t('apiKeys.description')}</th>
                   <th scope="col">{t('apiKeys.apiKey')}</th>
                   <th scope="col">{t('apiKeys.allowedDatabases')}</th>
@@ -501,7 +474,7 @@ function ApiKeys() {
                     onClick={handleCopy}
                     aria-label={copied ? t('apiKeys.copiedCreatedKey') : t('apiKeys.copyCreatedKey')}
                   >
-                    {copied ? t('apiKeys.copied') : t('apiKeys.copy')}
+                    {copied ? t('apiKeys.copied') : t('common.copy')}
                   </button>
                 </div>
               </div>
@@ -513,7 +486,7 @@ function ApiKeys() {
             <form onSubmit={handleSubmit}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label htmlFor="api-key-name">{t('apiKeys.keyName')}</label>
+                  <label htmlFor="api-key-name">{t('common.name')}</label>
                   <input
                     id="api-key-name"
                     value={form.name}
@@ -521,7 +494,7 @@ function ApiKeys() {
                     placeholder="my-app"
                     required
                     disabled={!!editingName}
-                    aria-label={t('apiKeys.keyName')}
+                    aria-label={t('common.name')}
                   />
                 </div>
                 <div className="form-group">

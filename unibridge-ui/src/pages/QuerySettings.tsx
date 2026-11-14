@@ -12,11 +12,6 @@ function parseBlockedKeywords(value: string): string[] {
     .filter((k) => k.length > 0);
 }
 
-/** Retention fields are absent on backends that predate them; 0 = keep forever. */
-function retentionValue(value: number | undefined): number {
-  return value ?? 0;
-}
-
 function settingsKey(settings: QuerySettings): string {
   return [
     settings.rate_limit_per_minute,
@@ -25,9 +20,9 @@ function settingsKey(settings: QuerySettings): string {
     settings.query_route_timeout,
     settings.gateway_route_timeout,
     settings.blocked_sql_keywords.join('\0'),
-    retentionValue(settings.audit_log_retention_days),
-    retentionValue(settings.admin_audit_log_retention_days),
-    retentionValue(settings.alert_history_retention_days),
+    settings.audit_log_retention_days,
+    settings.admin_audit_log_retention_days,
+    settings.alert_history_retention_days,
   ].join(':');
 }
 
@@ -41,15 +36,9 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
   const [queryRouteTimeout, setQueryRouteTimeout] = useState(settings.query_route_timeout);
   const [gatewayRouteTimeout, setGatewayRouteTimeout] = useState(settings.gateway_route_timeout);
   const [blockedKeywords, setBlockedKeywords] = useState(settings.blocked_sql_keywords.join(', '));
-  const [auditRetention, setAuditRetention] = useState(
-    retentionValue(settings.audit_log_retention_days),
-  );
-  const [adminAuditRetention, setAdminAuditRetention] = useState(
-    retentionValue(settings.admin_audit_log_retention_days),
-  );
-  const [alertHistoryRetention, setAlertHistoryRetention] = useState(
-    retentionValue(settings.alert_history_retention_days),
-  );
+  const [auditRetention, setAuditRetention] = useState(settings.audit_log_retention_days);
+  const [adminAuditRetention, setAdminAuditRetention] = useState(settings.admin_audit_log_retention_days);
+  const [alertHistoryRetention, setAlertHistoryRetention] = useState(settings.alert_history_retention_days);
 
   const draftSettings: QuerySettings = {
     rate_limit_per_minute: rateLimit,
@@ -71,9 +60,9 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
     setQueryRouteTimeout(next.query_route_timeout);
     setGatewayRouteTimeout(next.gateway_route_timeout);
     setBlockedKeywords(next.blocked_sql_keywords.join(', '));
-    setAuditRetention(retentionValue(next.audit_log_retention_days));
-    setAdminAuditRetention(retentionValue(next.admin_audit_log_retention_days));
-    setAlertHistoryRetention(retentionValue(next.alert_history_retention_days));
+    setAuditRetention(next.audit_log_retention_days);
+    setAdminAuditRetention(next.admin_audit_log_retention_days);
+    setAlertHistoryRetention(next.alert_history_retention_days);
   }
 
   const updateMut = useMutation({

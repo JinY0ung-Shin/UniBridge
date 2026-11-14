@@ -62,19 +62,9 @@ describe('AlertStatus page', () => {
     await waitFor(() => expect(screen.getAllByText(/None|없음|0/).length).toBeGreaterThan(0));
   });
 
-  it('accepts a bare-array status payload from an older backend', async () => {
-    // getAlertStatus normalizes the legacy shape, so the page only ever sees
-    // the object form; this guards the page against an empty normalization.
-    mockGet.mockResolvedValue(statusResult([
-      { target: 'legacy-db', type: 'db_health', status: 'alert', since: null },
-    ]));
-    renderWithProviders(<AlertStatus />);
-    await waitFor(() => expect(screen.getByText('legacy-db')).toBeInTheDocument());
-  });
-
   it('renders empty target as asterisk', async () => {
     mockGet.mockResolvedValue(statusResult([
-      { target: '', type: 'error_rate', status: 'alert', since: null },
+      { target: '', type: 'route_error_rate', status: 'alert', since: null },
     ]));
     renderWithProviders(<AlertStatus />);
     await waitFor(() => expect(screen.getByText('*')).toBeInTheDocument());
@@ -168,29 +158,6 @@ describe('AlertStatus page', () => {
     expect(screen.getByText('1 muted excluded')).toBeInTheDocument();
     expect(screen.getByText('quiet-db').closest('tr')).toHaveClass('status-row--muted');
     expect(screen.getByText('loud-db').closest('tr')).not.toHaveClass('status-row--muted');
-  });
-
-  it('derives mute state from the mutes list when the status row omits it', async () => {
-    mockGet.mockResolvedValue(statusResult([
-      {
-        target: 'db1', type: 'db_health', status: 'alert', since: null,
-        resource_type: 'db', resource_id: 'db1',
-      },
-    ]));
-    mockGetMutes.mockResolvedValue({
-      global_muted_until: null,
-      mutes: [
-        {
-          resource_type: 'db',
-          resource_id: 'db1',
-          muted_until: '2099-01-01T00:00:00Z',
-          created_by: 'admin',
-        },
-      ],
-    });
-    renderWithProviders(<AlertStatus />);
-    await waitFor(() => expect(screen.getByText('db1').closest('tr')).toHaveClass('status-row--muted'));
-    expect(screen.getByRole('button', { name: 'Unmute db1' })).toBeInTheDocument();
   });
 
   it('mutes a row for a preset duration', async () => {
@@ -323,21 +290,6 @@ describe('AlertStatus page', () => {
     renderWithProviders(<AlertStatus />);
     await waitFor(() => expect(screen.getByText('mystery')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Mute mystery' })).not.toBeInTheDocument();
-  });
-
-  it('offers no mute button when the row carries no mute key at all', async () => {
-    // backend predating mutes: keying off type/target would address the wrong
-    // resource and be rejected, so the action is withheld entirely
-    mockGet.mockResolvedValue(statusResult([
-      { target: 'checkout (r-1)', type: 'route_error_rate', status: 'alert', since: null },
-    ]));
-    renderWithProviders(<AlertStatus />);
-    await waitFor(() => expect(screen.getByText('checkout (r-1)')).toBeInTheDocument());
-    expect(
-      screen.queryByRole('button', { name: 'Mute checkout (r-1)' }),
-    ).not.toBeInTheDocument();
-    // the global mute control is unrelated and stays available
-    expect(screen.getByRole('button', { name: 'Mute all alerts' })).toBeInTheDocument();
   });
 
   it('rejects a mute window longer than the backend allows', async () => {

@@ -106,12 +106,12 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
 
   return (
     <div className="time-range-selector">
-      <div className="time-range-toggle" role="group" aria-label={t('timeRange.label')}>
+      <div className="segmented-toggle time-range-toggle" role="group" aria-label={t('timeRange.label')}>
         {TIME_RANGES.map((r) => (
           <button
             key={r}
             type="button"
-            className={`time-range-btn ${value.kind === 'preset' && value.value === r ? 'time-range-btn--active' : ''}`}
+            className={`segmented-toggle__btn time-range-btn ${value.kind === 'preset' && value.value === r ? 'segmented-toggle__btn--active' : ''}`}
             aria-pressed={value.kind === 'preset' && value.value === r}
             onClick={() => onChange({ kind: 'preset', value: r })}
           >
@@ -134,7 +134,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
         ) : (
           <button
             type="button"
-            className="time-range-btn time-range-btn--custom"
+            className="segmented-toggle__btn time-range-btn time-range-btn--custom"
             data-testid="custom-toggle"
             ref={customButtonRef}
             aria-expanded={open}
@@ -185,7 +185,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
           )}
           <div className="time-range-actions">
             <button type="button" onClick={closeCustom}>
-              {t('timeRange.cancel')}
+              {t('common.cancel')}
             </button>
             <button type="button" data-testid="custom-apply" disabled={!valid} onClick={apply}>
               {t('timeRange.apply')}

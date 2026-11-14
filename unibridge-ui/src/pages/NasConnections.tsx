@@ -13,6 +13,7 @@ import {
 import ResourceModal from '../components/ResourceModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { errorMessage } from '../utils/apiError';
 import './Connections.css';
 
 const emptyForm: NasConnectionConfig = {
@@ -170,7 +171,7 @@ function NasConnections() {
         <div className="page-header__actions connections-header-actions">
           {connections.length > 0 && (
             <input
-              className="connection-search-input"
+              className="search-input"
               type="search"
               value={connectionSearch}
               onChange={(event) => setConnectionSearch(event.target.value)}
@@ -377,9 +378,7 @@ function NasConnections() {
 
             {(createMutation.isError || updateMutation.isError) && (
               <div className="form-error" role="alert">
-                {(createMutation.error as Error)?.message ||
-                  (updateMutation.error as Error)?.message ||
-                  t('common.errorOccurred')}
+                {errorMessage(createMutation.error ?? updateMutation.error, t('common.errorOccurred'))}
               </div>
             )}
 

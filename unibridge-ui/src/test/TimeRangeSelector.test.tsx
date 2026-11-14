@@ -11,7 +11,7 @@ describe('TimeRangeSelector', () => {
       <TimeRangeSelector value={{ kind: 'preset', value: '1h' }} onChange={vi.fn()} />,
     );
     expect(screen.getByRole('button', { name: '15m' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '1h' })).toHaveClass('time-range-btn--active');
+    expect(screen.getByRole('button', { name: '1h' })).toHaveClass('segmented-toggle__btn--active');
     expect(screen.getByRole('group', { name: 'Time range' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '1h' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: '15m' })).toHaveAttribute('aria-pressed', 'false');

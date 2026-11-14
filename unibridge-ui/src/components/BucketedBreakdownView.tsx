@@ -4,10 +4,10 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { useChartTheme } from './useChartTheme';
+import { useChartTheme, chartTooltipProps } from './useChartTheme';
 import { type Bucket } from '../utils/timeRange';
 import { formatBucketLabel } from '../utils/time';
-import { QUERY_UI_CONSUMER, QUERY_UNTRACKED_CONSUMER } from '../utils/monitoring';
+import { QUERY_UI_CONSUMER, QUERY_UNTRACKED_CONSUMER, compactNumber } from '../utils/monitoring';
 import type { BucketedBreakdown } from '../api/client';
 
 interface BucketedBreakdownViewProps {
@@ -22,13 +22,6 @@ interface BucketedBreakdownViewProps {
    *  `(untracked)`). Only for per-API-key breakdowns: other dimensions (e.g.
    *  free-form DB aliases) may legitimately carry those strings. */
   queryConsumerLabels?: boolean;
-}
-
-/** Default compact value formatter (used when the page passes none). */
-function compactNumber(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(Math.round(value));
 }
 
 /** Stable palette for the stacked series; cycles when there are many keys. */
@@ -119,9 +112,7 @@ function BucketedBreakdownView({
                   label={{ value: unit, angle: -90, position: 'insideLeft', fill: chartColors.axis, fontSize: 11 }}
                 />
                 <Tooltip
-                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                  labelStyle={{ color: chartColors.axis }}
-                  itemStyle={{ color: chartColors.textSecondary }}
+                  {...chartTooltipProps(chartColors)}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 {data!.series.map((s, i) => (

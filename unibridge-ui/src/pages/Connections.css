@@ -14,37 +14,10 @@
   flex-wrap: wrap;
 }
 
-.connection-search-input {
-  width: min(260px, 32vw);
-  min-width: 180px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: var(--font-sans);
-  outline: none;
-}
-
-.connection-search-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.connection-search-input::placeholder {
-  color: var(--text-tertiary);
-}
-
 /* Allowed-bucket list: keep rows compact, full list stays in the title tooltip. */
 .connections .cell-allowed-buckets {
   max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  .connection-search-input {
-    width: 100%;
-  }
 }

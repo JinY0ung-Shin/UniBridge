@@ -34,6 +34,15 @@ export function useChartTheme(): ChartTheme {
   };
 }
 
+/** Recharts <Tooltip> styling for the theme: `<Tooltip {...chartTooltipProps(theme)} />`. */
+export function chartTooltipProps(theme: ChartTheme) {
+  return {
+    contentStyle: { background: theme.tooltipBg, border: `1px solid ${theme.tooltipBorder}`, borderRadius: 6 },
+    labelStyle: { color: theme.axis },
+    itemStyle: { color: theme.textSecondary },
+  };
+}
+
 export function statusCodeColor(code: string, theme: ChartTheme): string {
   if (code.startsWith('2')) return theme.green;
   if (code.startsWith('3')) return theme.blue;

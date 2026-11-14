@@ -7,7 +7,6 @@ import {
   UPLOAD_RELAY_PATH,
   captureTicket,
   describeTicket,
-  formatBytes,
   fragmentTicket,
   localProblem,
   reloadPage,
@@ -15,6 +14,7 @@ import {
   type RelayProblem,
   type TicketInfo,
 } from '../utils/uploadRelay';
+import { formatBytes } from '../utils/bytes';
 import './UploadRelay.css';
 
 /**
@@ -380,7 +380,7 @@ export default function UploadRelay() {
             <p className="upload-relay-limits">
               {t('uploadRelay.limits', {
                 types: info.accept.join(' '),
-                size: formatBytes(info.maxBytes),
+                size: formatBytes(info.maxBytes, { fixedDecimal: true }),
                 count: info.maxFiles,
               })}
             </p>
@@ -405,7 +405,7 @@ export default function UploadRelay() {
               return (
                 <li key={row.key} className={`upload-relay-file upload-relay-file--${state}`}>
                   <span className="upload-relay-file-name">{row.name}</span>
-                  <span className="upload-relay-file-size">{formatBytes(row.size)}</span>
+                  <span className="upload-relay-file-size">{formatBytes(row.size, { fixedDecimal: true })}</span>
                   <span className="upload-relay-file-status">
                     {state === 'refused'
                       ? t('uploadRelay.status.refused', { reason: t(`uploadRelay.problem.${row.problem ?? 'unknown'}`) })

@@ -97,29 +97,6 @@
   flex-wrap: wrap;
 }
 
-.method-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-@media (max-width: 720px) {
-  .method-check {
-    min-height: 44px;
-    padding: 8px 4px;
-  }
-}
-
-.method-check input {
-  accent-color: var(--accent-blue);
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-
 .uri-input-group {
   display: flex;
   align-items: center;

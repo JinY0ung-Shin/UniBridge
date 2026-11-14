@@ -3,7 +3,8 @@ import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { checkNetworkAccess, type AccessEndpoint, type NetworkProtocol } from '../../api/network';
 import { useToast } from '../../components/useToast';
-import { intOrUndefined, networkErrorMessage } from './networkUtils';
+import { intOrUndefined } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 import { OpeningsTable, UsagesTable } from './NetworkTables';
 import { useAllNetworkHosts } from './useNetworkActions';
 import { MismatchBadge, ProbeResultBadge, ProbeTime } from './ProbeBadges';
@@ -114,7 +115,7 @@ function AccessCheckTab() {
       </form>
 
       {check.isError && (
-        <div className="error-banner" role="alert">{networkErrorMessage(check.error, t('common.errorOccurred'))}</div>
+        <div className="error-banner" role="alert">{apiErrorMessage(check.error, t('common.errorOccurred'))}</div>
       )}
 
       {result && (
@@ -161,7 +162,7 @@ function AccessCheckTab() {
               <div className="network-draft__header">
                 <h3>{t('network.check.requestDraft')}</h3>
                 <button type="button" className="btn btn-sm btn-secondary" onClick={() => copyDraft(result.request_draft!)}>
-                  {t('network.check.copy')}
+                  {t('common.copy')}
                 </button>
               </div>
               <pre aria-label={t('network.check.requestDraft')}>{result.request_draft}</pre>

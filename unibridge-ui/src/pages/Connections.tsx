@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -13,8 +13,10 @@ import {
   type DatabaseConfig,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
+import CurlModal from '../components/CurlModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { errorMessage } from '../utils/apiError';
 import './Connections.css';
 
 function parseEmails(value: string): string[] {
@@ -168,21 +170,6 @@ function Connections() {
         .toLowerCase()
         .includes(normalizedConnectionSearch))
     : databases;
-  const curlCopyTimeoutRef = useRef<number | null>(null);
-
-  function clearCurlCopyTimer() {
-    if (curlCopyTimeoutRef.current !== null) {
-      window.clearTimeout(curlCopyTimeoutRef.current);
-      curlCopyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCurlCopyTimer();
-    };
-  }, []);
-
   function openCreate() {
     setForm({ ...emptyForm });
     setAssigneesDraft(null);
@@ -222,10 +209,8 @@ function Connections() {
   }
 
   const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
-  const [curlCopied, setCurlCopied] = useState(false);
 
   async function handleCurl(db: DatabaseConfig) {
-    clearCurlCopyTimer();
     const alias = db.alias;
     let sampleQuery = 'MATCH (n) RETURN n LIMIT 10';
     let tableName = '<TABLE>';
@@ -242,29 +227,6 @@ function Connections() {
     const body = JSON.stringify({ database: alias, sql: sampleQuery }, null, 2);
     const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${base}' \\\n  -d '${body}'`;
     setCurlModal({ alias, curl });
-    setCurlCopied(false);
-  }
-
-  async function handleCurlCopy() {
-    if (!curlModal) return;
-    clearCurlCopyTimer();
-    try {
-      await navigator.clipboard.writeText(curlModal.curl);
-      setCurlCopied(true);
-      curlCopyTimeoutRef.current = window.setTimeout(() => {
-        setCurlCopied(false);
-        curlCopyTimeoutRef.current = null;
-      }, 2000);
-    } catch {
-      setCurlCopied(false);
-      addToast({ type: 'error', title: t('connections.copyFailed') });
-    }
-  }
-
-  function closeCurlModal() {
-    clearCurlCopyTimer();
-    setCurlCopied(false);
-    setCurlModal(null);
   }
 
   function handleTest(alias: string) {
@@ -293,7 +255,7 @@ function Connections() {
           <div className="page-header__actions connections-header-actions">
             {databases.length > 0 && (
               <input
-                className="connection-search-input"
+                className="search-input"
                 type="search"
                 value={connectionSearch}
                 onChange={(event) => setConnectionSearch(event.target.value)}
@@ -658,9 +620,7 @@ function Connections() {
 
             {(createMutation.isError || updateMutation.isError) && (
               <div className="form-error" role="alert">
-                {(createMutation.error as Error)?.message ||
-                  (updateMutation.error as Error)?.message ||
-                  t('common.errorOccurred')}
+                {errorMessage(createMutation.error ?? updateMutation.error, t('common.errorOccurred'))}
               </div>
             )}
 
@@ -677,27 +637,11 @@ function Connections() {
       )}
 
       {curlModal && (
-        <ResourceModal
+        <CurlModal
           title={`cURL — ${curlModal.alias}`}
-          onClose={closeCurlModal}
-          closeLabel={t('common.close')}
-          className="modal--sm"
-        >
-          <div className="curl-block">
-            <pre className="curl-code">{curlModal.curl}</pre>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary curl-copy-btn"
-              onClick={handleCurlCopy}
-              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
-            >
-              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-            </button>
-            <span className="visually-hidden" role="status" aria-live="polite">
-              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
-            </span>
-          </div>
-        </ResourceModal>
+          curl={curlModal.curl}
+          onClose={() => setCurlModal(null)}
+        />
       )}
     </div>
   );

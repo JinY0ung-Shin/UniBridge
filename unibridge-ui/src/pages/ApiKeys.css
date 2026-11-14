@@ -14,27 +14,6 @@
   flex-wrap: wrap;
 }
 
-.api-key-search-input {
-  width: min(260px, 32vw);
-  min-width: 180px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: var(--font-sans);
-  outline: none;
-}
-
-.api-key-search-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.api-key-search-input::placeholder {
-  color: var(--text-tertiary);
-}
-
 /* Mirrors the alert settings' per-resource switch. */
 .api-keys-scope-switch {
   display: inline-flex;
@@ -270,10 +249,4 @@
   color: var(--text-tertiary);
   padding: 8px;
   text-align: center;
-}
-
-@media (max-width: 720px) {
-  .api-key-search-input {
-    width: 100%;
-  }
 }

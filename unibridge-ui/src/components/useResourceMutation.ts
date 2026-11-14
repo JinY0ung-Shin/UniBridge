@@ -1,12 +1,6 @@
 import { useMutation, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { useToast } from './useToast';
-
-export function extractErrorDetail(err: unknown): string | undefined {
-  if (err && typeof err === 'object' && 'response' in err) {
-    return (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
-  }
-  return undefined;
-}
+import { apiErrorDetail } from '../utils/apiError';
 
 type ErrorMode =
   | { kind: 'toast'; title: string }
@@ -31,7 +25,7 @@ export function useResourceMutation<TVars, TData>(opts: ResourceMutationOptions<
       opts.onSuccess?.(data, vars);
     },
     onError: (err) => {
-      const detail = extractErrorDetail(err);
+      const detail = apiErrorDetail(err);
       const mode = opts.errorMode;
       if (!mode) return;
       if (mode.kind === 'toast') {

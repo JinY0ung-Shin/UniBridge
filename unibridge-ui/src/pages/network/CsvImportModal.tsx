@@ -8,7 +8,8 @@ import {
 } from '../../api/network';
 import ResourceModal from '../../components/ResourceModal';
 import { CSV_COLUMNS, decodeCsvBytes, readFileBytes, sampleHeader, type CsvEncoding } from './csvText';
-import { NETWORK_KEY, networkErrorMessage } from './networkUtils';
+import { NETWORK_KEY } from './networkUtils';
+import { apiErrorMessage } from '../../utils/apiError';
 
 const ACTION_BADGE: Record<string, string> = {
   create: 'badge-ok',
@@ -114,7 +115,7 @@ export function CsvImportModal({ kind, onClose }: CsvImportModalProps) {
   }
 
   const lang = i18n.resolvedLanguage === 'ko' ? 'ko' : 'en';
-  const error = run.isError ? networkErrorMessage(run.error, t('network.import.failed')) : readError;
+  const error = run.isError ? apiErrorMessage(run.error, t('network.import.failed')) : readError;
   const title = t('network.import.title', { kind: t(`network.import.kinds.${kind}`) });
 
   return (

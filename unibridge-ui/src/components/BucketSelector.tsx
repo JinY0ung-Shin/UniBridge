@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
 import { BUCKETS, type Bucket } from '../utils/timeRange';
-import './BucketSelector.css';
 
 interface BucketSelectorProps {
   value: Bucket;
@@ -14,12 +13,12 @@ interface BucketSelectorProps {
 function BucketSelector({ value, onChange }: BucketSelectorProps) {
   const { t } = useTranslation();
   return (
-    <div className="bucket-toggle" role="group" aria-label={t('bucket.label')}>
+    <div className="segmented-toggle" role="group" aria-label={t('bucket.label')}>
       {BUCKETS.map((b) => (
         <button
           key={b}
           type="button"
-          className={`bucket-btn ${value === b ? 'bucket-btn--active' : ''}`}
+          className={`segmented-toggle__btn bucket-btn ${value === b ? 'segmented-toggle__btn--active' : ''}`}
           aria-pressed={value === b}
           onClick={() => onChange(b)}
         >

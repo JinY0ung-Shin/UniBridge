@@ -49,7 +49,7 @@ function OpeningsTab() {
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value as '' | OpeningStatus)}
-            aria-label={t('network.openings.status')}
+            aria-label={t('common.status')}
           >
             <option value="">{t('network.allStatuses')}</option>
             <option value="open">{t('network.status.open')}</option>

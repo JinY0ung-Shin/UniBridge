@@ -63,7 +63,7 @@ export function OpeningsTable({ openings, label, onEdit }: OpeningsTableProps) {
             <th scope="col">{t('network.openings.source')}</th>
             <th scope="col">{t('network.openings.destination')}</th>
             <th scope="col">{t('network.ports')}</th>
-            <th scope="col">{t('network.openings.status')}</th>
+            <th scope="col">{t('common.status')}</th>
             <th scope="col">{t('network.openings.ticket')}</th>
             <th scope="col">{t('network.openings.requester')}</th>
             <th scope="col">{t('network.openings.purpose')}</th>

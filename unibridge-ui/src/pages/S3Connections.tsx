@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -11,8 +11,10 @@ import {
   type S3ConnectionConfig,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
+import CurlModal from '../components/CurlModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { errorMessage } from '../utils/apiError';
 import './Connections.css';
 
 const emptyForm: S3ConnectionConfig = {
@@ -94,8 +96,6 @@ function S3Connections() {
   });
 
   const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
-  const [curlCopied, setCurlCopied] = useState(false);
-  const curlCopyTimeoutRef = useRef<number | null>(null);
 
   const connections = connQuery.data ?? [];
   const normalizedConnectionSearch = connectionSearch.trim().toLowerCase();
@@ -171,21 +171,7 @@ function S3Connections() {
     testMutation.mutate(alias);
   }
 
-  function clearCurlCopyTimer() {
-    if (curlCopyTimeoutRef.current !== null) {
-      window.clearTimeout(curlCopyTimeoutRef.current);
-      curlCopyTimeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCurlCopyTimer();
-    };
-  }, []);
-
   function handleCurl(alias: string, defaultBucket: string | null | undefined) {
-    clearCurlCopyTimer();
     const base = `${window.location.origin}/api/s3`;
     const bucket = defaultBucket || '<BUCKET>';
     const curl = [
@@ -217,30 +203,6 @@ function S3Connections() {
       `  '${base}/${alias}/objects/presigned-url?bucket=${bucket}&key=<FILE_KEY>'`,
     ].join('\n');
     setCurlModal({ alias, curl });
-    setCurlCopied(false);
-  }
-
-  async function handleCurlCopy() {
-    if (curlModal) {
-      try {
-        clearCurlCopyTimer();
-        await navigator.clipboard.writeText(curlModal.curl);
-        setCurlCopied(true);
-        curlCopyTimeoutRef.current = window.setTimeout(() => {
-          setCurlCopied(false);
-          curlCopyTimeoutRef.current = null;
-        }, 2000);
-      } catch {
-        setCurlCopied(false);
-        addToast({ type: 'error', title: t('connections.copyFailed') });
-      }
-    }
-  }
-
-  function closeCurlModal() {
-    clearCurlCopyTimer();
-    setCurlCopied(false);
-    setCurlModal(null);
   }
 
   function updateField<K extends keyof S3ConnectionConfig>(key: K, value: S3ConnectionConfig[K]) {
@@ -259,7 +221,7 @@ function S3Connections() {
         <div className="page-header__actions connections-header-actions">
           {connections.length > 0 && (
             <input
-              className="connection-search-input"
+              className="search-input"
               type="search"
               value={connectionSearch}
               onChange={(event) => setConnectionSearch(event.target.value)}
@@ -524,9 +486,7 @@ function S3Connections() {
 
             {(createMutation.isError || updateMutation.isError) && (
               <div className="form-error" role="alert">
-                {(createMutation.error as Error)?.message ||
-                  (updateMutation.error as Error)?.message ||
-                  t('common.errorOccurred')}
+                {errorMessage(createMutation.error ?? updateMutation.error, t('common.errorOccurred'))}
               </div>
             )}
 
@@ -543,27 +503,11 @@ function S3Connections() {
       )}
 
       {curlModal && (
-        <ResourceModal
+        <CurlModal
           title={`cURL — ${curlModal.alias}`}
-          onClose={closeCurlModal}
-          closeLabel={t('common.close')}
-          className="modal--sm"
-        >
-          <div className="curl-block">
-            <pre className="curl-code">{curlModal.curl}</pre>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary curl-copy-btn"
-              onClick={handleCurlCopy}
-              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
-            >
-              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-            </button>
-            <span className="visually-hidden" role="status" aria-live="polite">
-              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
-            </span>
-          </div>
-        </ResourceModal>
+          curl={curlModal.curl}
+          onClose={() => setCurlModal(null)}
+        />
       )}
     </div>
   );

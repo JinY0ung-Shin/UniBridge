@@ -109,23 +109,6 @@ export function makeDatabase(overrides = {}) {
   };
 }
 
-export function makeClickHouseDatabase(overrides = {}) {
-  return {
-    alias: 'test-ch',
-    db_type: 'clickhouse' as const,
-    host: 'localhost',
-    port: 8123,
-    database: 'analytics',
-    username: 'default',
-    protocol: 'http' as const,
-    secure: false,
-    pool_size: 5,
-    max_overflow: 3,
-    query_timeout: 30,
-    ...overrides,
-  };
-}
-
 export function makeAuditLog(overrides = {}) {
   return {
     id: 1,
@@ -226,7 +209,6 @@ export function makeGatewayRoute(overrides = {}) {
     status: 1,
     require_auth: false,
     strip_prefix: false,
-    service_key: null,
     service_keys: [],
     plugins: {},
     ...overrides,

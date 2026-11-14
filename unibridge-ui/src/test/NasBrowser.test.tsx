@@ -297,7 +297,7 @@ describe('NasBrowser page', () => {
     await waitFor(() => {
       expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining('/api/nas/nas-main/download?path=file.txt'));
     });
-    expect(within(dialog).getByRole('status')).toHaveTextContent(i18n.t('nas.apiExamplesCopied'));
+    expect(within(dialog).getByRole('status')).toHaveTextContent(i18n.t('common.copied'));
   });
 
   it('shows an error banner when the listing fails', async () => {

@@ -1,41 +1,5 @@
 /* Shared monitoring view primitives. Keep these imported by each monitoring route. */
 
-/* Time Range Toggle */
-
-.time-range-toggle {
-  display: flex;
-  gap: 0;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.time-range-btn {
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  background: var(--bg-secondary);
-  color: var(--text-tertiary);
-  border: none;
-  cursor: pointer;
-  transition: all 0.15s;
-  border-right: 1px solid var(--border-default);
-}
-
-.time-range-btn:last-child {
-  border-right: none;
-}
-
-.time-range-btn:hover {
-  color: var(--text-secondary);
-}
-
-.time-range-btn--active {
-  background: var(--text-primary);
-  color: var(--text-inverse);
-}
-
 /* Metric Cards */
 
 .metric-cards {

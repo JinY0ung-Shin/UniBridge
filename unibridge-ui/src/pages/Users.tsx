@@ -16,6 +16,7 @@ import { useAuth } from '../components/useAuth';
 import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
 import { isPendingUser } from '../utils/users';
+import { apiErrorMessage } from '../utils/apiError';
 import './Users.css';
 
 function roleBadgeClass(user: Pick<KeycloakUser, 'role'>): string {
@@ -25,14 +26,6 @@ function roleBadgeClass(user: Pick<KeycloakUser, 'role'>): string {
   if (r === 'developer') return 'role-badge role-badge--developer';
   if (r === 'viewer') return 'role-badge role-badge--viewer';
   return 'role-badge role-badge--default';
-}
-
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const axiosErr = err as { response?: { data?: { detail?: string } } };
-    return axiosErr.response?.data?.detail ?? fallback;
-  }
-  return fallback;
 }
 
 type ModalMode = 'create' | 'role' | 'password';
@@ -85,7 +78,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.createFailed'))),
+    onError: (err: unknown) => setError(apiErrorMessage(err, t('users.createFailed'))),
   });
 
   const changeRoleMutation = useMutation({
@@ -94,7 +87,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.changeRoleFailed'))),
+    onError: (err: unknown) => setError(apiErrorMessage(err, t('users.changeRoleFailed'))),
   });
 
   const resetPasswordMutation = useMutation({
@@ -103,7 +96,7 @@ function Users() {
     onSuccess: () => {
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.resetPasswordFailed'))),
+    onError: (err: unknown) => setError(apiErrorMessage(err, t('users.resetPasswordFailed'))),
   });
 
   const toggleEnabledMutation = useMutation({
@@ -113,7 +106,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      addToast({ type: 'error', title: extractErrorMessage(err, t('users.toggleFailed')) });
+      addToast({ type: 'error', title: apiErrorMessage(err, t('users.toggleFailed')) });
     },
   });
 
@@ -123,7 +116,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      addToast({ type: 'error', title: extractErrorMessage(err, t('users.deleteFailed')) });
+      addToast({ type: 'error', title: apiErrorMessage(err, t('users.deleteFailed')) });
     },
   });
 

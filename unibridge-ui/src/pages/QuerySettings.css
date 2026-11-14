@@ -61,7 +61,10 @@
   border-color: var(--accent-blue);
 }
 
-.form-hint {
+/* Scoped to the two pages that import this file, so it never overrides the shared
+   .form-hint elsewhere; :where() keeps the specificity of a bare .form-hint, so
+   page rules such as .mcp-section-hint still win as before. */
+:where(.query-settings, .mcp-settings) .form-hint {
   display: block;
   font-size: 12px;
   color: var(--text-secondary);

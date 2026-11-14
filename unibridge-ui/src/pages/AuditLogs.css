@@ -6,66 +6,6 @@
   margin-bottom: 28px;
 }
 
-/* ── Filter bar ── */
-
-.filter-bar {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-  align-items: flex-end;
-}
-
-.filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.filter-field label {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.filter-select,
-.filter-input {
-  padding: 8px 12px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  font-family: var(--font-sans);
-  outline: none;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  transition: border-color 0.15s;
-}
-
-.filter-select:focus,
-.filter-input:focus {
-  border-color: var(--text-tertiary);
-}
-
-.filter-select {
-  min-width: 160px;
-  appearance: none;
-  cursor: pointer;
-}
-
-.filter-input {
-  width: 150px;
-}
-
-.filter-input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.filter-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 /* ── Audit table tweaks ── */
 
 .audit-table .audit-row {
@@ -171,19 +111,4 @@
 .page-info {
   font-size: 13px;
   color: var(--text-tertiary);
-}
-
-@media (max-width: 720px) {
-  .filter-select,
-  .filter-input,
-  .filter-field,
-  .filter-actions,
-  .filter-actions .btn {
-    width: 100%;
-  }
-
-  .filter-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
