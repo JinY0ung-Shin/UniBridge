@@ -31,12 +31,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from app.config import settings
 from app.schemas import _LABEL_NAME_RE, RESERVED_HOST_LABELS
@@ -244,18 +243,55 @@ def _write_json_atomic(path: str, data: Any) -> None:
         raise
 
 
+@dataclass(frozen=True)
+class _TargetsFile:
+    """One file_sd targets file: the setting naming its path, and its renderer.
+
+    ``what`` names the file in the warning a failed best-effort sync logs.
+    """
+
+    path_setting: str
+    build: Callable[[Iterable[Any]], list[dict[str, Any]]]
+    what: str
+
+    async def write(self, items: Iterable[Any], path: str | None = None) -> None:
+        """Write the file atomically. Raises on I/O failure."""
+        target_path = path or getattr(settings, self.path_setting)
+        await asyncio.to_thread(_write_json_atomic, target_path, self.build(items))
+
+
+_NODE_TARGETS = _TargetsFile("PROMETHEUS_FILE_SD_PATH", build_targets, "file_sd targets")
+_GPU_TARGETS = _TargetsFile(
+    "PROMETHEUS_GPU_FILE_SD_PATH", build_gpu_targets, "GPU file_sd targets"
+)
+
+
+async def _rewrite_targets(items: Iterable[Any], files: Iterable[_TargetsFile]) -> None:
+    """Write each file from ``items``, logging (not raising) a failed write.
+
+    The files are written independently so a failure on one still refreshes the
+    others.
+    """
+    for targets in files:
+        try:
+            await targets.write(items)
+        except Exception as exc:  # noqa: BLE001 — best-effort reconcile
+            logger.warning(
+                "Failed to write Prometheus %s to %s: %s",
+                targets.what,
+                getattr(settings, targets.path_setting),
+                exc,
+            )
+
+
 async def write_targets_file(hosts: Iterable[Any], path: str | None = None) -> None:
     """Write the file_sd targets file atomically. Raises on I/O failure."""
-    target_path = path or settings.PROMETHEUS_FILE_SD_PATH
-    entries = build_targets(hosts)
-    await asyncio.to_thread(_write_json_atomic, target_path, entries)
+    await _NODE_TARGETS.write(hosts, path)
 
 
 async def write_gpu_targets_file(hosts: Iterable[Any], path: str | None = None) -> None:
     """Write the dcgm-exporter file_sd targets file atomically. Raises on I/O failure."""
-    target_path = path or settings.PROMETHEUS_GPU_FILE_SD_PATH
-    entries = build_gpu_targets(hosts)
-    await asyncio.to_thread(_write_json_atomic, target_path, entries)
+    await _GPU_TARGETS.write(hosts, path)
 
 
 async def sync_targets_from_db(db) -> None:
@@ -277,23 +313,7 @@ async def _sync_targets_locked(db) -> None:
 
     # Ordered, so an unchanged registry renders byte-identical files.
     result = await db.execute(select(MonitoredHost).order_by(MonitoredHost.name))
-    hosts = result.scalars().all()
-    try:
-        await write_targets_file(hosts)
-    except Exception as exc:  # noqa: BLE001 — best-effort reconcile
-        logger.warning(
-            "Failed to write Prometheus file_sd targets to %s: %s",
-            settings.PROMETHEUS_FILE_SD_PATH,
-            exc,
-        )
-    try:
-        await write_gpu_targets_file(hosts)
-    except Exception as exc:  # noqa: BLE001 — best-effort reconcile
-        logger.warning(
-            "Failed to write Prometheus GPU file_sd targets to %s: %s",
-            settings.PROMETHEUS_GPU_FILE_SD_PATH,
-            exc,
-        )
+    await _rewrite_targets(result.scalars().all(), (_NODE_TARGETS, _GPU_TARGETS))
 
 
 # ── Threshold inputs ─────────────────────────────────────────────────────────
@@ -485,6 +505,12 @@ def disk_capacity_query(
     return f'max by (host, mountpoint) (node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}})'
 
 
+def _up_by(results: list[dict[str, Any]], label: str) -> dict[str, bool]:
+    """``up`` instant-query result → {label value: is_up}; NaN samples are dropped."""
+    values = prometheus_client.map_by_label(results, label, drop_nan=True)
+    return {key: value >= 1.0 for key, value in values.items()}
+
+
 async def host_up_map() -> dict[str, bool] | None:
     """Return {host_name: is_up} from Prometheus, or None if it is unreachable."""
     try:
@@ -492,7 +518,7 @@ async def host_up_map() -> dict[str, bool] | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query host up status: %s", exc)
         return None
-    return {host: value >= 1.0 for host, value in _map_by_host(results).items()}
+    return _up_by(results, "host")
 
 
 async def gpu_up_map() -> dict[str, bool] | None:
@@ -502,7 +528,7 @@ async def gpu_up_map() -> dict[str, bool] | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query GPU exporter up status: %s", exc)
         return None
-    return {host: value >= 1.0 for host, value in _map_by_host(results).items()}
+    return _up_by(results, "host")
 
 
 async def gpu_util_daily_avg_map() -> dict[str, float]:
@@ -513,24 +539,9 @@ async def gpu_util_daily_avg_map() -> dict[str, float]:
     once-per-day marker and retry on the next cycle, which it cannot do if the
     failure is flattened into an empty map.
     """
-    return _map_by_host(await prometheus_client.instant_query(_q_gpu_util_avg_24h()))
-
-
-def _map_by_host(results: list[dict[str, Any]]) -> dict[str, float]:
-    """Collapse instant-query results into {host_label: value}, dropping NaN."""
-    out: dict[str, float] = {}
-    for item in results:
-        host = item.get("metric", {}).get("host")
-        if not host:
-            continue
-        try:
-            value = float(item.get("value", [0, "nan"])[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if math.isnan(value):
-            continue
-        out[str(host)] = value
-    return out
+    return prometheus_client.map_by_label(
+        await prometheus_client.instant_query(_q_gpu_util_avg_24h()), "host", drop_nan=True
+    )
 
 
 def _effective(override: float | None, default: float) -> float:
@@ -652,7 +663,9 @@ async def evaluate_hosts(
 
     async def _query(label: str, promql: str) -> dict[str, float] | None:
         try:
-            return _map_by_host(await prometheus_client.instant_query(promql))
+            return prometheus_client.map_by_label(
+                await prometheus_client.instant_query(promql), "host", drop_nan=True
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Server %s query failed: %s", label, exc)
             if failed_queries is not None:
@@ -960,13 +973,16 @@ def build_service_targets(services: Iterable[Any]) -> list[dict[str, Any]]:
     return entries
 
 
+_SERVICE_TARGETS = _TargetsFile(
+    "PROMETHEUS_SERVICES_FILE_SD_PATH", build_service_targets, "file_sd service targets"
+)
+
+
 async def write_service_targets_file(
     services: Iterable[Any], path: str | None = None
 ) -> None:
     """Write the external-services file_sd targets file atomically. Raises on I/O failure."""
-    target_path = path or settings.PROMETHEUS_SERVICES_FILE_SD_PATH
-    entries = build_service_targets(services)
-    await asyncio.to_thread(_write_json_atomic, target_path, entries)
+    await _SERVICE_TARGETS.write(services, path)
 
 
 async def sync_service_targets_from_db(db) -> None:
@@ -986,15 +1002,7 @@ async def _sync_service_targets_locked(db) -> None:
     from app.models import MonitoredService
 
     result = await db.execute(select(MonitoredService).order_by(MonitoredService.name))
-    services = result.scalars().all()
-    try:
-        await write_service_targets_file(services)
-    except Exception as exc:  # noqa: BLE001 — best-effort reconcile
-        logger.warning(
-            "Failed to write Prometheus file_sd service targets to %s: %s",
-            settings.PROMETHEUS_SERVICES_FILE_SD_PATH,
-            exc,
-        )
+    await _rewrite_targets(result.scalars().all(), (_SERVICE_TARGETS,))
 
 
 async def reconcile_scrape_targets() -> None:
@@ -1017,23 +1025,6 @@ def _q_service_up() -> str:
     return f'up{{job="{_services_job()}"}}'
 
 
-def _map_by_service(results: list[dict[str, Any]]) -> dict[str, float]:
-    """Collapse instant-query results into {service_label: value}, dropping NaN."""
-    out: dict[str, float] = {}
-    for item in results:
-        service = item.get("metric", {}).get("service")
-        if not service:
-            continue
-        try:
-            value = float(item.get("value", [0, "nan"])[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if math.isnan(value):
-            continue
-        out[str(service)] = value
-    return out
-
-
 async def service_up_map() -> dict[str, bool] | None:
     """Return {service_name: is_up} from Prometheus, or None if it is unreachable."""
     try:
@@ -1041,7 +1032,7 @@ async def service_up_map() -> dict[str, bool] | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query external-service up status: %s", exc)
         return None
-    return {name: value >= 1.0 for name, value in _map_by_service(results).items()}
+    return _up_by(results, "service")
 
 
 @dataclass
@@ -1073,7 +1064,9 @@ async def evaluate_services(
     if not enabled:
         return []
     try:
-        up_map = _map_by_service(await prometheus_client.instant_query(_q_service_up()))
+        up_map = prometheus_client.map_by_label(
+            await prometheus_client.instant_query(_q_service_up()), "service", drop_nan=True
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "External-service health check skipped (Prometheus query failed): %s", exc

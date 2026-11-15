@@ -21,7 +21,9 @@ from app.services.alert_sender import render_recipient_items, render_template, s
 
 logger = logging.getLogger(__name__)
 
-ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
+# Resource types that carry assignees (담당자, a ResourceOwner row). The
+# assignee admin API (``app.routers.alerts``) accepts exactly these.
+ASSIGNEE_RESOURCE_TYPES = frozenset({"db", "s3", "nas", "route", "server", "service"})
 
 # Mail subject/status wording per transition. Anything that is not one of the two
 # incident transitions is a scheduled report (e.g. the daily GPU
@@ -248,10 +250,10 @@ async def _resolve_recipients(
             owner_emails_json, alerts_enabled = owner_row
             if not alerts_enabled:
                 return False, []
-            assignees = _parse_emails(owner_emails_json)
+            assignees = _parse_emails_strict(owner_emails_json)
 
     referenced = await _resolve_referenced_assignees(db, extra_refs)
-    admins = _parse_emails(admin_emails_json)
+    admins = _parse_emails_strict(admin_emails_json)
 
     seen: set[str] = set()
     recipients: list[str] = []
@@ -311,7 +313,7 @@ async def _resolve_referenced_assignees(
         if not row_alerts_enabled:
             continue
         try:
-            emails.extend(_parse_emails(row_emails))
+            emails.extend(_parse_emails_strict(row_emails))
         except ValueError as exc:
             logger.warning(
                 "Skipping assignees of referenced %s '%s': %s", ref_type, ref_id, exc
@@ -319,7 +321,14 @@ async def _resolve_referenced_assignees(
     return emails
 
 
-def _parse_emails(emails_json: str | None) -> list[str]:
+def _parse_emails_strict(emails_json: str | None) -> list[str]:
+    """Stored email list for delivery: stripped, blanks dropped.
+
+    Raises ``ValueError`` on malformed JSON or a non-string entry, so a corrupt
+    row is noticed (the dispatch fails, or the ref is skipped) instead of
+    silently mailing fewer people. The admin API's display reader,
+    ``app.routers.alerts._parse_emails``, is lenient on purpose.
+    """
     if not emails_json:
         return []
     try:

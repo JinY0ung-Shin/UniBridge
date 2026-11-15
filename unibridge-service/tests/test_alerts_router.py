@@ -19,8 +19,17 @@ from app.models import (
     S3Connection,
 )
 from app.routers import alerts as alerts_router
+from app.services.alert_owner_dispatcher import ASSIGNEE_RESOURCE_TYPES
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
+
+
+def test_every_assignable_resource_type_has_one_source():
+    """Each type the assignee API accepts is listed from the meta DB or APISIX."""
+    db_types = set(alerts_router.RESOURCE_ID_COLUMNS)
+    apisix_types = set(alerts_router.APISIX_RESOURCE_TYPES)
+    assert not db_types & apisix_types
+    assert db_types | apisix_types == ASSIGNEE_RESOURCE_TYPES
 
 
 WEBHOOK = "https://hooks.example.com/svc"

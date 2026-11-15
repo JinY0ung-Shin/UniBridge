@@ -4,7 +4,8 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from app import metrics
 from app.config import settings
 from app.database import async_session
+from app.db_types import KST, as_utc
 from app.models import AlertSettings, MonitoredHost, MonitoredService
 from app.services import server_monitor
 from app.services.active_color import is_active_instance
@@ -73,50 +75,52 @@ _MAX_CONCURRENT_HEALTH_PROBES = 8
 _REASON_TIMEOUT = "timeout"
 
 
-async def _get_check_interval_seconds() -> int:
+async def _read_alert_setting(
+    column: Any,
+    what: str,
+    *,
+    default: int,
+    low: int,
+    high: int,
+    unreadable: int | None,
+) -> int | None:
+    """One column of the AlertSettings row, clamped to ``[low, high]``.
+
+    ``default`` stands in for a missing row or an unset column, ``unreadable``
+    for a meta DB that could not be read (logged as "Failed to load <what>").
+    """
     try:
         async with async_session() as db:
-            result = await db.execute(
-                select(AlertSettings.check_interval_seconds).where(AlertSettings.id == 1)
-            )
-            interval = result.scalar_one_or_none()
+            result = await db.execute(select(column).where(AlertSettings.id == 1))
+            value = result.scalar_one_or_none()
     except Exception as exc:
-        logger.warning("Failed to load alert check interval: %s", exc)
-        return CHECK_INTERVAL
-    if interval is None:
-        return CHECK_INTERVAL
-    return min(3600, max(30, int(interval)))
+        logger.warning("Failed to load %s: %s", what, exc)
+        return unreadable
+    if value is None:
+        return default
+    return min(high, max(low, int(value)))
+
+
+async def _get_check_interval_seconds() -> int:
+    return await _read_alert_setting(
+        AlertSettings.check_interval_seconds, "alert check interval",
+        default=CHECK_INTERVAL, low=30, high=3600, unreadable=CHECK_INTERVAL,
+    )
 
 
 async def _get_trigger_after_failures() -> int:
-    try:
-        async with async_session() as db:
-            result = await db.execute(
-                select(AlertSettings.trigger_after_failures).where(AlertSettings.id == 1)
-            )
-            value = result.scalar_one_or_none()
-    except Exception as exc:
-        logger.warning("Failed to load alert trigger_after_failures: %s", exc)
-        return 2
-    if value is None:
-        return 2
-    return min(10, max(1, int(value)))
+    return await _read_alert_setting(
+        AlertSettings.trigger_after_failures, "alert trigger_after_failures",
+        default=2, low=1, high=10, unreadable=2,
+    )
 
 
 async def _get_resolve_after_successes() -> int:
     """Consecutive healthy cycles required before an alert resolves (1 = immediate)."""
-    try:
-        async with async_session() as db:
-            result = await db.execute(
-                select(AlertSettings.resolve_after_successes).where(AlertSettings.id == 1)
-            )
-            value = result.scalar_one_or_none()
-    except Exception as exc:
-        logger.warning("Failed to load alert resolve_after_successes: %s", exc)
-        return 5
-    if value is None:
-        return 5
-    return min(60, max(1, int(value)))
+    return await _read_alert_setting(
+        AlertSettings.resolve_after_successes, "alert resolve_after_successes",
+        default=5, low=1, high=60, unreadable=5,
+    )
 
 
 def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
@@ -675,47 +679,36 @@ async def _process_host_signal(
     repeat: int,
     mutes: MuteIndex,
 ) -> None:
-    """Run one host signal through the state machine and dispatch pipeline.
+    """Run one host signal through :func:`_run_signal`.
 
     The per-signal half of :func:`_check_server_health`, factored out so
     synthetic signals (see :func:`_retire_disabled_host_signals`) take the
-    exact same path as evaluated ones: state update → mute gate → persist →
-    dispatch → dispatch-result handling.
+    exact same path as evaluated ones.
     """
-    was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
-    transition = state.update(
-        sig.alert_type, sig.target,
+    value = getattr(sig, "value", None)
+
+    async def notification(_outbound: str) -> dict[str, Any]:
+        return {
+            "message": sig.message, "display_target": sig.display,
+            "rate": sig.value, "threshold": sig.threshold,
+            "monitor_label": sig.monitor_label, "severity": sig.severity,
+            "target_description": sig.description,
+        }
+
+    await _run_signal(
+        state, mutes,
+        rule_type=sig.alert_type, resource_type="server", target=sig.target,
         is_healthy=sig.is_healthy,
-        observation={"message": sig.message, "value": getattr(sig, "value", None),
+        observation={"message": sig.message, "value": value,
                      "threshold": getattr(sig, "threshold", None),
-                     "unit": "%" if getattr(sig, "value", None) is not None else None},
+                     "unit": "%" if value is not None else None},
         display_target=sig.display,
         severity=sig.severity,
         trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes,
         repeat_after_cycles=repeat,
+        notification=notification,
     )
-    announced = _is_announced(state, sig.alert_type, sig.target, was_alerting)
-    outbound = _outbound_alert_type(
-        state, mutes,
-        rule_type=sig.alert_type, target=sig.target, transition=transition,
-        resource_type="server", resource_id=sig.target,
-        was_alerting=was_alerting,
-    )
-    await _persist_state_safely(state, sig.alert_type, sig.target)
-    if outbound:
-        result = await dispatch_alert(
-            resource_type="server", resource_id=sig.target,
-            alert_type=outbound, rule_type=sig.alert_type,
-            target=sig.target, message=sig.message,
-            display_target=sig.display, rate=sig.value, threshold=sig.threshold,
-            monitor_label=sig.monitor_label, severity=sig.severity,
-            target_description=sig.description,
-        )
-        await _handle_dispatch_result(
-            state, outbound=outbound, result=result,
-            rule_type=sig.alert_type, target=sig.target, announced=announced,
-        )
 
 
 async def _retire_disabled_host_signals(
@@ -850,39 +843,107 @@ async def _check_service_health(
             state.mark_unavailable(entry["type"], entry["target"], "Service metrics could not be collected")
             await _persist_state_safely(state, entry["type"], entry["target"])
     for sig in signals:
-        was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
-        transition = state.update(
-            sig.alert_type, sig.target,
-            is_healthy=sig.is_healthy,
-            observation={"message": sig.message},
-            display_target=sig.display,
-            severity=sig.severity,
+        await _process_service_signal(
+            state, sig,
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
-            repeat_after_cycles=repeat,
+            repeat=repeat,
+            mutes=mutes,
         )
-        announced = _is_announced(state, sig.alert_type, sig.target, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type=sig.alert_type, target=sig.target, transition=transition,
-            resource_type="service", resource_id=sig.target,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, sig.alert_type, sig.target)
-        if outbound:
-            result = await dispatch_alert(
-                resource_type="service", resource_id=sig.target,
-                alert_type=outbound, rule_type=sig.alert_type,
-                target=sig.target, message=sig.message,
-                display_target=sig.display, rate=None, threshold=None,
-                monitor_label=sig.monitor_label, severity=sig.severity,
-                target_description=sig.description,
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type=sig.alert_type, target=sig.target, announced=announced,
-            )
     return not failed_queries
+
+
+async def _process_service_signal(
+    state: AlertStateManager,
+    sig: server_monitor.ServiceSignal,
+    *,
+    trigger_after_failures: int,
+    resolve_after_successes: int,
+    repeat: int,
+    mutes: MuteIndex,
+) -> None:
+    """Run one external-service signal through :func:`_run_signal`."""
+    async def notification(_outbound: str) -> dict[str, Any]:
+        return {
+            "message": sig.message, "display_target": sig.display,
+            "rate": None, "threshold": None,
+            "monitor_label": sig.monitor_label, "severity": sig.severity,
+            "target_description": sig.description,
+        }
+
+    await _run_signal(
+        state, mutes,
+        rule_type=sig.alert_type, resource_type="service", target=sig.target,
+        is_healthy=sig.is_healthy,
+        observation={"message": sig.message},
+        display_target=sig.display,
+        severity=sig.severity,
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
+        repeat_after_cycles=repeat,
+        notification=notification,
+    )
+
+
+async def _run_signal(
+    state: AlertStateManager,
+    mutes: MuteIndex,
+    *,
+    rule_type: str,
+    resource_type: str,
+    target: str,
+    is_healthy: bool,
+    observation: dict[str, Any],
+    trigger_after_failures: int,
+    resolve_after_successes: int,
+    notification: Callable[[str], Awaitable[dict[str, Any]]],
+    display_target: str | None = None,
+    severity: str | None = None,
+    repeat_after_cycles: int = 0,
+) -> None:
+    """Run one evaluated target through the state machine and dispatch pipeline.
+
+    The path every check shares: state update → mute gate → persist →
+    dispatch → dispatch-result handling. The target doubles as the resource id
+    its mute and recipients are looked up by. ``display_target``, ``severity``
+    and ``repeat_after_cycles`` go to :meth:`AlertStateManager.update` as is.
+
+    ``notification`` is awaited only when there is something to send, with the
+    outbound transition ("triggered"/"resolved"), after the state has been
+    persisted; it returns the rest of the :func:`dispatch_alert` arguments
+    (``message``, ``display_target``, ``monitor_label``, …), so a check may do
+    its lookups for the mail there.
+    """
+    was_alerting = state.get_status(rule_type, target) == "alert"
+    transition = state.update(
+        rule_type, target,
+        is_healthy=is_healthy,
+        observation=observation,
+        display_target=display_target,
+        severity=severity,
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
+        repeat_after_cycles=repeat_after_cycles,
+    )
+    announced = _is_announced(state, rule_type, target, was_alerting)
+    outbound = _outbound_alert_type(
+        state, mutes,
+        rule_type=rule_type, target=target, transition=transition,
+        resource_type=resource_type, resource_id=target,
+        was_alerting=was_alerting,
+    )
+    await _persist_state_safely(state, rule_type, target)
+    if not outbound:
+        return
+    result = await dispatch_alert(
+        resource_type=resource_type, resource_id=target,
+        alert_type=outbound, rule_type=rule_type, target=target,
+        **await notification(outbound),
+    )
+    await _handle_dispatch_result(
+        state, outbound=outbound, result=result,
+        rule_type=rule_type, target=target, announced=announced,
+    )
 
 
 async def _persist_state_safely(
@@ -1095,10 +1156,21 @@ async def _evaluate_route_error_rule(
         is_healthy = True
     else:
         is_healthy = rate < threshold
-    was_alerting = state.get_status("route_error_rate", route_id) == "alert"
-    transition = state.update(
-        "route_error_rate",
-        route_id,
+
+    async def notification(_outbound: str) -> dict[str, Any]:
+        return {
+            "message": (
+                f"Route '{display}' 5xx error rate is "
+                f"{rate:.1f}% (threshold: {threshold}%)."
+            ),
+            "display_target": display,
+            "rate": rate, "threshold": threshold,
+            "monitor_label": "라우트 에러율",
+        }
+
+    await _run_signal(
+        state, mutes if mutes is not None else MuteIndex(),
+        rule_type="route_error_rate", resource_type="route", target=route_id,
         is_healthy=is_healthy,
         observation={"message": "Insufficient traffic to evaluate error rate" if sample_count < min_requests else "Route 5xx error rate",
                      "value": rate, "threshold": threshold, "unit": "%",
@@ -1106,32 +1178,125 @@ async def _evaluate_route_error_rule(
         display_target=display,
         trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes,
+        notification=notification,
     )
-    announced = _is_announced(state, "route_error_rate", route_id, was_alerting)
-    outbound = _outbound_alert_type(
-        state, mutes if mutes is not None else MuteIndex(),
-        rule_type="route_error_rate", target=route_id, transition=transition,
-        resource_type="route", resource_id=route_id,
-        was_alerting=was_alerting,
+
+
+@dataclass(frozen=True)
+class _ConnectionCheck:
+    """Wording of one registered-connection check (DB, S3, NAS)."""
+
+    rule_type: str
+    resource_type: str
+    checked: str        # observation: "<checked> connection check succeeded"
+    subject: str        # mail: "<subject> '<alias>' …"
+    restored: str       # mail on recovery: "<subject> '<alias>' <restored>."
+    failed: str         # mail on failure: "<subject> '<alias>' <failed>."
+    monitor_label: str
+
+
+_DB_CHECK = _ConnectionCheck(
+    "db_health", "db", "Database", "Database",
+    "connection restored", "connection failed", "DB 헬스체크",
+)
+_S3_CHECK = _ConnectionCheck(
+    "s3_health", "s3", "S3", "S3 connection",
+    "restored", "is unavailable", "S3 연결 상태",
+)
+_NAS_CHECK = _ConnectionCheck(
+    "nas_health", "nas", "NAS", "NAS connection",
+    "restored", "is unavailable", "NAS 연결 상태",
+)
+
+
+async def _process_connection_signal(
+    state: AlertStateManager,
+    mutes: MuteIndex,
+    check: _ConnectionCheck,
+    alias: str,
+    is_healthy: bool,
+    reason: str | None,
+    *,
+    trigger_after_failures: int,
+    resolve_after_successes: int,
+) -> None:
+    """Run one connection probe result through :func:`_run_signal`."""
+    async def notification(outbound: str) -> dict[str, Any]:
+        subject = f"{check.subject} '{alias}'"
+        if outbound == "resolved":
+            msg = f"{subject} {check.restored}."
+        elif reason == _REASON_TIMEOUT:
+            msg = (
+                f"{subject} health check timed out after "
+                f"{settings.DB_HEALTHCHECK_TIMEOUT_SECONDS:g}s."
+            )
+        else:
+            msg = f"{subject} {check.failed}."
+        return {"message": msg, "display_target": alias, "monitor_label": check.monitor_label}
+
+    outcome = "succeeded" if is_healthy else "failed"
+    await _run_signal(
+        state, mutes,
+        rule_type=check.rule_type, resource_type=check.resource_type, target=alias,
+        is_healthy=is_healthy,
+        observation={"message": f"{check.checked} connection check {outcome}",
+                     "reason": reason},
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
+        notification=notification,
     )
-    await _persist_state_safely(state, "route_error_rate", route_id)
-    if outbound:
-        msg = (
-            f"Route '{display}' 5xx error rate is "
-            f"{rate:.1f}% (threshold: {threshold}%)."
-        )
-        result = await dispatch_alert(
-            resource_type="route", resource_id=route_id,
-            alert_type=outbound, rule_type="route_error_rate",
-            target=route_id, message=msg,
-            display_target=display,
-            rate=rate, threshold=threshold,
-            monitor_label="라우트 에러율",
-        )
-        await _handle_dispatch_result(
-            state, outbound=outbound, result=result,
-            rule_type="route_error_rate", target=route_id, announced=announced,
-        )
+
+
+async def _process_upstream_signal(
+    state: AlertStateManager,
+    mutes: MuteIndex,
+    uid: str,
+    is_healthy: bool,
+    reason: str | None,
+    *,
+    trigger_after_failures: int,
+    resolve_after_successes: int,
+) -> None:
+    """Run one upstream probe result through :func:`_run_signal`."""
+    upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
+    display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
+
+    async def notification(outbound: str) -> dict[str, Any]:
+        # Upstreams have no assignees of their own, so the alert borrows the
+        # ones from every route that depends on this upstream — and names
+        # those routes, or the mail lands on people with no idea why.
+        try:
+            route_ids = await _get_route_ids_for_upstream(uid)
+        except Exception as exc:  # noqa: BLE001 - CC list is never worth losing an alert over
+            logger.warning("Failed to resolve routes for upstream '%s': %s", uid, exc)
+            route_ids = []
+        affected = ""
+        if route_ids:
+            labels = ", ".join([await _get_route_label(rid) for rid in route_ids])
+            affected = f" Affected routes: {labels}."
+        if outbound == "resolved":
+            msg = f"Upstream '{display}' recovered.{affected}"
+        elif reason == _REASON_NO_NODES:
+            msg = f"Upstream '{display}' has no weighted nodes configured.{affected}"
+        else:
+            msg = f"Upstream '{display}' is down (no reachable node).{affected}"
+        return {
+            "message": msg, "display_target": display,
+            "monitor_label": "업스트림 헬스체크",
+            "assignee_refs": [("route", rid) for rid in route_ids],
+        }
+
+    await _run_signal(
+        state, mutes,
+        rule_type="upstream_health", resource_type="upstream", target=uid,
+        is_healthy=is_healthy,
+        observation={"message": "Upstream reachability check succeeded" if is_healthy else "Upstream reachability check failed",
+                     "reason": reason},
+        display_target=display,
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
+        notification=notification,
+    )
 
 
 async def run_single_check(
@@ -1153,174 +1318,32 @@ async def run_single_check(
     if mutes is None:
         mutes = await load_mute_index()
 
+    common = {
+        "trigger_after_failures": trigger_after_failures,
+        "resolve_after_successes": resolve_after_successes,
+    }
+
     # 1. DB health
-    db_results = await _check_db_health()
-    for alias, is_healthy, reason in db_results:
-        was_alerting = state.get_status("db_health", alias) == "alert"
-        transition = state.update(
-            "db_health", alias,
-            is_healthy=is_healthy,
-            observation={"message": "Database connection check succeeded" if is_healthy else "Database connection check failed",
-                         "reason": reason},
-            trigger_after_failures=trigger_after_failures,
-            resolve_after_successes=resolve_after_successes,
+    for alias, is_healthy, reason in await _check_db_health():
+        await _process_connection_signal(
+            state, mutes, _DB_CHECK, alias, is_healthy, reason, **common
         )
-        announced = _is_announced(state, "db_health", alias, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type="db_health", target=alias, transition=transition,
-            resource_type="db", resource_id=alias,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, "db_health", alias)
-        if outbound:
-            if outbound == "resolved":
-                msg = f"Database '{alias}' connection restored."
-            elif reason == _REASON_TIMEOUT:
-                msg = (
-                    f"Database '{alias}' health check timed out after "
-                    f"{settings.DB_HEALTHCHECK_TIMEOUT_SECONDS:g}s."
-                )
-            else:
-                msg = f"Database '{alias}' connection failed."
-            result = await dispatch_alert(
-                resource_type="db", resource_id=alias,
-                alert_type=outbound, rule_type="db_health",
-                target=alias, message=msg,
-                display_target=alias, monitor_label="DB 헬스체크",
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type="db_health", target=alias, announced=announced,
-            )
 
     # 2. S3 connection health
-    s3_results = await _check_s3_health()
-    for alias, is_healthy in s3_results:
-        was_alerting = state.get_status("s3_health", alias) == "alert"
-        transition = state.update(
-            "s3_health", alias,
-            is_healthy=is_healthy,
-            observation={"message": "S3 connection check succeeded" if is_healthy else "S3 connection check failed",
-                         "reason": None},
-            trigger_after_failures=trigger_after_failures,
-            resolve_after_successes=resolve_after_successes,
+    for alias, is_healthy in await _check_s3_health():
+        await _process_connection_signal(
+            state, mutes, _S3_CHECK, alias, is_healthy, None, **common
         )
-        announced = _is_announced(state, "s3_health", alias, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type="s3_health", target=alias, transition=transition,
-            resource_type="s3", resource_id=alias,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, "s3_health", alias)
-        if outbound:
-            msg = f"S3 connection '{alias}' {'restored' if outbound == 'resolved' else 'is unavailable'}."
-            result = await dispatch_alert(
-                resource_type="s3", resource_id=alias,
-                alert_type=outbound, rule_type="s3_health",
-                target=alias, message=msg,
-                display_target=alias, monitor_label="S3 연결 상태",
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type="s3_health", target=alias, announced=announced,
-            )
 
     # 3. NAS connection health
-    nas_results = await _check_nas_health()
-    for alias, is_healthy, reason in nas_results:
-        was_alerting = state.get_status("nas_health", alias) == "alert"
-        transition = state.update(
-            "nas_health", alias,
-            is_healthy=is_healthy,
-            observation={"message": "NAS connection check succeeded" if is_healthy else "NAS connection check failed",
-                         "reason": reason},
-            trigger_after_failures=trigger_after_failures,
-            resolve_after_successes=resolve_after_successes,
+    for alias, is_healthy, reason in await _check_nas_health():
+        await _process_connection_signal(
+            state, mutes, _NAS_CHECK, alias, is_healthy, reason, **common
         )
-        announced = _is_announced(state, "nas_health", alias, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type="nas_health", target=alias, transition=transition,
-            resource_type="nas", resource_id=alias,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, "nas_health", alias)
-        if outbound:
-            if outbound == "resolved":
-                msg = f"NAS connection '{alias}' restored."
-            elif reason == _REASON_TIMEOUT:
-                msg = (
-                    f"NAS connection '{alias}' health check timed out after "
-                    f"{settings.DB_HEALTHCHECK_TIMEOUT_SECONDS:g}s."
-                )
-            else:
-                msg = f"NAS connection '{alias}' is unavailable."
-            result = await dispatch_alert(
-                resource_type="nas", resource_id=alias,
-                alert_type=outbound, rule_type="nas_health",
-                target=alias, message=msg,
-                display_target=alias, monitor_label="NAS 연결 상태",
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type="nas_health", target=alias, announced=announced,
-            )
 
     # 4. Upstream health
-    upstream_results = await _check_upstream_health()
-    for uid, is_healthy, reason in upstream_results:
-        upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
-        display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
-        was_alerting = state.get_status("upstream_health", uid) == "alert"
-        transition = state.update(
-            "upstream_health", uid,
-            is_healthy=is_healthy,
-            observation={"message": "Upstream reachability check succeeded" if is_healthy else "Upstream reachability check failed",
-                         "reason": reason},
-            display_target=display,
-            trigger_after_failures=trigger_after_failures,
-            resolve_after_successes=resolve_after_successes,
-        )
-        announced = _is_announced(state, "upstream_health", uid, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type="upstream_health", target=uid, transition=transition,
-            resource_type="upstream", resource_id=uid,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, "upstream_health", uid)
-        if outbound:
-            # Upstreams have no assignees of their own, so the alert borrows the
-            # ones from every route that depends on this upstream — and names
-            # those routes, or the mail lands on people with no idea why.
-            try:
-                route_ids = await _get_route_ids_for_upstream(uid)
-            except Exception as exc:  # noqa: BLE001 - CC list is never worth losing an alert over
-                logger.warning("Failed to resolve routes for upstream '%s': %s", uid, exc)
-                route_ids = []
-            affected = ""
-            if route_ids:
-                labels = ", ".join([await _get_route_label(rid) for rid in route_ids])
-                affected = f" Affected routes: {labels}."
-            if outbound == "resolved":
-                msg = f"Upstream '{display}' recovered.{affected}"
-            elif reason == _REASON_NO_NODES:
-                msg = f"Upstream '{display}' has no weighted nodes configured.{affected}"
-            else:
-                msg = f"Upstream '{display}' is down (no reachable node).{affected}"
-            result = await dispatch_alert(
-                resource_type="upstream", resource_id=uid,
-                alert_type=outbound, rule_type="upstream_health",
-                target=uid, message=msg,
-                display_target=display, monitor_label="업스트림 헬스체크",
-                assignee_refs=[("route", rid) for rid in route_ids],
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type="upstream_health", target=uid, announced=announced,
-            )
+    for uid, is_healthy, reason in await _check_upstream_health():
+        await _process_upstream_signal(state, mutes, uid, is_healthy, reason, **common)
 
     # 5. Server (host) health via node_exporter metrics
     hosts_prometheus_ok = await _check_server_health(
@@ -1433,7 +1456,7 @@ _TEMPLATE_CONFIRM_MINUTES = 10
 # Alerting: how often to look whether it has been fixed.
 _TEMPLATE_RECHECK_MINUTES = 30
 # Where the interval is laid out from: a Monday, 08:00 KST.
-_TEMPLATE_SCHEDULE_ANCHOR = datetime(2026, 1, 5, 8, 0, tzinfo=timezone(timedelta(hours=9)))
+_TEMPLATE_SCHEDULE_ANCHOR = datetime(2026, 1, 5, 8, 0, tzinfo=KST)
 # alert_state / alert_history.display_target are String(200).
 _DISPLAY_TARGET_MAX_CHARS = 200
 _MAX_CONCURRENT_TEMPLATE_CHECKS = 2
@@ -1447,22 +1470,11 @@ async def _get_template_check_interval_minutes() -> int | None:
     Unreadable is not "use the default": without the meta DB neither the
     templates nor an administrator's "off" can be read, so the cycle is skipped.
     """
-    try:
-        async with async_session() as db:
-            result = await db.execute(
-                select(AlertSettings.template_check_interval_minutes).where(AlertSettings.id == 1)
-            )
-            value = result.scalar_one_or_none()
-    except Exception as exc:
-        logger.warning("Failed to load the template check interval: %s", exc)
-        return None
-    if value is None:
-        return _TEMPLATE_CHECK_DEFAULT_MINUTES
-    return min(_TEMPLATE_CHECK_MAX_MINUTES, max(0, int(value)))
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return await _read_alert_setting(
+        AlertSettings.template_check_interval_minutes, "the template check interval",
+        default=_TEMPLATE_CHECK_DEFAULT_MINUTES, low=0, high=_TEMPLATE_CHECK_MAX_MINUTES,
+        unreadable=None,
+    )
 
 
 def _template_schedule_slot(moment: datetime, interval_minutes: int) -> int:
@@ -1481,10 +1493,10 @@ def _template_check_due(
         return True
     current = (entry.get("details") or {}).get("current") or {}
     try:
-        checked_at = _utc(datetime.fromisoformat(current["checked_at"]))
+        checked_at = as_utc(datetime.fromisoformat(current["checked_at"]))
     except (KeyError, TypeError, ValueError):
         return True
-    if updated_at is not None and _utc(updated_at) > checked_at:
+    if updated_at is not None and as_utc(updated_at) > checked_at:
         return True
     if entry["status"] == "alert":
         sooner = _TEMPLATE_RECHECK_MINUTES
@@ -1629,54 +1641,55 @@ async def run_template_checks(
     results = await asyncio.gather(*(_one(row) for row in rows))
 
     for row, result in zip(rows, results):
-        if result is None:
-            continue
-        path = row.path
-        display = f"{row.name} ({path})"
-        if len(display) > _DISPLAY_TARGET_MAX_CHARS:
-            # Name (100) plus path (200) can outgrow the column; Postgres would
-            # refuse the state row, and the alert would re-fire after a restart.
-            display = path
-        is_healthy = result.level == "ok"
-        severity = None if is_healthy else ("warning" if result.level == "warning" else "critical")
-        was_alerting = state.get_status(TEMPLATE_HEALTH_RULE, path) == "alert"
-        transition = state.update(
-            TEMPLATE_HEALTH_RULE, path,
-            is_healthy=is_healthy,
-            observation={
-                "message": result.message, "reason": result.reason, "level": result.level,
-                "error": result.error, "row_count": result.row_count,
-                "elapsed_ms": result.elapsed_ms, "database": row.db_alias,
-            },
-            display_target=display,
-            severity=severity,
-            trigger_after_failures=trigger_after_failures,
-            resolve_after_successes=1,
-        )
-        announced = _is_announced(state, TEMPLATE_HEALTH_RULE, path, was_alerting)
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type=TEMPLATE_HEALTH_RULE, target=path, transition=transition,
-            resource_type="template", resource_id=path,
-            was_alerting=was_alerting,
-        )
-        await _persist_state_safely(state, TEMPLATE_HEALTH_RULE, path)
-        if outbound:
-            # A template has no assignees of its own; the people who own its
-            # database hear about it, next to the administrators.
-            dispatched = await dispatch_alert(
-                resource_type="template", resource_id=path,
-                alert_type=outbound, rule_type=TEMPLATE_HEALTH_RULE,
-                target=path,
-                message=_template_alert_message(path, row.db_alias, outbound, result),
-                display_target=display, monitor_label=_TEMPLATE_MONITOR_LABEL,
-                severity=severity,
-                assignee_refs=[("db", row.db_alias)],
+        if result is not None:
+            await _process_template_result(
+                state, mutes, row, result, trigger_after_failures=trigger_after_failures
             )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=dispatched,
-                rule_type=TEMPLATE_HEALTH_RULE, target=path, announced=announced,
-            )
+
+
+async def _process_template_result(
+    state: AlertStateManager,
+    mutes: MuteIndex,
+    row: Any,
+    result: Any,
+    *,
+    trigger_after_failures: int,
+) -> None:
+    """Run one template's sample run through :func:`_run_signal`."""
+    path = row.path
+    display = f"{row.name} ({path})"
+    if len(display) > _DISPLAY_TARGET_MAX_CHARS:
+        # Name (100) plus path (200) can outgrow the column; Postgres would
+        # refuse the state row, and the alert would re-fire after a restart.
+        display = path
+    is_healthy = result.level == "ok"
+    severity = None if is_healthy else ("warning" if result.level == "warning" else "critical")
+
+    async def notification(outbound: str) -> dict[str, Any]:
+        # A template has no assignees of its own; the people who own its
+        # database hear about it, next to the administrators.
+        return {
+            "message": _template_alert_message(path, row.db_alias, outbound, result),
+            "display_target": display, "monitor_label": _TEMPLATE_MONITOR_LABEL,
+            "severity": severity,
+            "assignee_refs": [("db", row.db_alias)],
+        }
+
+    await _run_signal(
+        state, mutes,
+        rule_type=TEMPLATE_HEALTH_RULE, resource_type="template", target=path,
+        is_healthy=is_healthy,
+        observation={
+            "message": result.message, "reason": result.reason, "level": result.level,
+            "error": result.error, "row_count": result.row_count,
+            "elapsed_ms": result.elapsed_ms, "database": row.db_alias,
+        },
+        display_target=display,
+        severity=severity,
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=1,
+        notification=notification,
+    )
 
 
 async def _template_round(

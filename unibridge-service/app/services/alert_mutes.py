@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db_types import as_utc
 from app.models import AlertMute
 
 logger = logging.getLogger(__name__)
@@ -82,20 +83,13 @@ class MuteIndex:
         return self.muted_until(resource_type, resource_id) is not None
 
 
-def _as_utc(value: datetime) -> datetime:
-    """Normalize to UTC, treating a naive value as UTC (SQLite reads back naive)."""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def validate_mute_window(muted_until: datetime, *, now: datetime | None = None) -> datetime:
     """Normalize ``muted_until`` to UTC and reject out-of-range windows.
 
     Raises ``ValueError`` for a past timestamp or one beyond ``MAX_MUTE_DAYS``.
     """
     reference = now or datetime.now(timezone.utc)
-    normalized = _as_utc(muted_until)
+    normalized = as_utc(muted_until)
     if normalized <= reference:
         raise ValueError("muted_until must be in the future")
     if normalized > reference + timedelta(days=MAX_MUTE_DAYS):
@@ -145,7 +139,7 @@ def build_index(mutes: list[AlertMute], *, now: datetime | None = None) -> MuteI
     global_until: datetime | None = None
     targets: dict[tuple[str, str], datetime] = {}
     for mute in mutes:
-        until = _as_utc(mute.muted_until)
+        until = as_utc(mute.muted_until)
         if until <= reference:
             continue
         if mute.resource_type == GLOBAL_MUTE_TYPE:
