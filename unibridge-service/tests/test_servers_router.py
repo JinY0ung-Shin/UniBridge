@@ -4,10 +4,10 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AlertState
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 @pytest.fixture(autouse=True)
@@ -259,7 +259,7 @@ async def test_clearing_gpu_address_clears_only_gpu_alert_state(client, admin_to
     assert created.status_code == 201, created.text
     host_id = created.json()["id"]
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(AlertState(alert_type="server_gpu_down", target="gpu-state", status="alert"))
         db.add(AlertState(alert_type="server_gpu_util", target="gpu-state", status="alert"))
@@ -375,7 +375,7 @@ async def test_disabling_server_persists_alert_state_cleanup(client, admin_token
     assert created.status_code == 201, created.text
     host_id = created.json()["id"]
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(AlertState(alert_type="server_down", target="web-state", status="alert"))
         await db.commit()

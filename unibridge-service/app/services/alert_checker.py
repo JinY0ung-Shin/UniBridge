@@ -26,7 +26,11 @@ from app.services.alert_state import (
     load_alert_state_from_db,
     save_alert_state_to_db,
 )
-from app.services.apisix_client import upstream_node_addresses
+from app.services.apisix_client import (
+    upstream_host_header,
+    upstream_node_addresses,
+    upstream_scheme,
+)
 from app.services.gpu_report import maybe_send_gpu_util_report
 from app.services.server_monitor import ServerThresholds
 
@@ -328,18 +332,8 @@ async def _check_nas_health() -> list[tuple[str, bool, str | None]]:
 
 
 # ── Upstream reachability probe ──────────────────────────────────────────────
-# Three of the helpers below (_upstream_scheme / _node_host /
-# _upstream_host_header) mirror `app/routers/gateway.py`'s route-test probe
-# (_http_scheme_for_upstream / _node_host / _host_header_for_upstream); both
-# probe /health. They are copies, not imports, but not because services never
-# import routers: mcp_tools imports app.routers.gateway at module level, and
-# this module already imports app.routers.query inside a function (as do
-# mcp_remote and network_import with other routers). Importing gateway here at
-# module level would pull its whole import chain into a module `app.main`
-# imports late, from its lifespan; moving the three helpers somewhere both can
-# import (apisix_client) is the way to drop the copies. Until then keep them in
-# sync with gateway.py if that probe changes. Node normalization is not among
-# them: both sides call `apisix_client.upstream_node_addresses`.
+# The node URL and Host header come from apisix_client (upstream_scheme,
+# upstream_host_header), the same helpers the gateway route-test probe uses.
 
 # Schemes this checker can probe. APISIX upstreams may also declare grpc, grpcs,
 # tcp, tls, udp or kafka; a GET /health against those proves nothing and usually
@@ -355,29 +349,10 @@ _REASON_NO_NODES = "no_nodes"
 _REASON_UNREACHABLE = "unreachable"
 
 
-def _upstream_scheme(upstream: dict[str, Any]) -> str:
-    scheme = upstream.get("scheme")
-    return scheme if scheme in _HTTP_SCHEMES else "http"
-
-
 def _is_http_upstream(upstream: dict[str, Any]) -> bool:
     """True when a GET probe is meaningful: an HTTP scheme, or none (APISIX defaults to http)."""
     scheme = upstream.get("scheme")
     return scheme is None or scheme in _HTTP_SCHEMES
-
-
-def _node_host(node_addr: str) -> str:
-    host, _sep, _port = node_addr.rpartition(":")
-    return host.strip("[]") if host else node_addr.strip("[]")
-
-
-def _upstream_host_header(upstream: dict[str, Any], node_addr: str) -> str:
-    pass_host = upstream.get("pass_host", "pass")
-    if pass_host == "node":
-        return _node_host(node_addr)
-    if pass_host == "rewrite" and isinstance(upstream.get("upstream_host"), str):
-        return upstream["upstream_host"]
-    return settings.HOST_IP
 
 
 async def _probe_node(
@@ -423,13 +398,13 @@ async def _probe_upstream(
         return False, _REASON_NO_NODES
     if not _is_http_upstream(upstream):
         return True, None
-    scheme = _upstream_scheme(upstream)
+    scheme = upstream_scheme(upstream)
     probes = [
         _probe_node(
             client,
             limiter,
             f"{scheme}://{addr}/health",
-            {"Host": _upstream_host_header(upstream, addr)},
+            {"Host": upstream_host_header(upstream, addr)},
         )
         for addr in addresses[:_MAX_PROBED_NODES_PER_UPSTREAM]
     ]
@@ -476,10 +451,9 @@ async def _check_upstream_health(
     if not items:
         return []
 
-    ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
     limiter = asyncio.Semaphore(_MAX_CONCURRENT_NODE_PROBES)
     async with httpx.AsyncClient(
-        timeout=_UPSTREAM_PROBE_TIMEOUT, verify=ssl_verify, transport=transport
+        timeout=_UPSTREAM_PROBE_TIMEOUT, verify=settings.httpx_verify, transport=transport
     ) as client:
         outcomes = await asyncio.gather(
             *(_probe_upstream(client, limiter, item) for item in items),

@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import re
 import socket
-from pathlib import Path
 
 import pytest
-import yaml
 
 from app.services.webhook_security import _BLOCKED_HOSTNAMES, validate_webhook_url
+from tests.helpers import REPO_ROOT, load_yaml
 
 
 # ── Scheme & format ─────────────────────────────────────────────────────────
@@ -67,10 +66,9 @@ _COLOR_VARIABLE = re.compile(r"\$\{APP_COLOR[^}]*\}")
 
 def _compose_hostnames() -> set[str]:
     """Service names, container names and network aliases of every compose file."""
-    repo_root = Path(__file__).resolve().parents[2]
     names: set[str] = set()
     for compose_file in _COMPOSE_FILES:
-        services = yaml.safe_load((repo_root / compose_file).read_text())["services"]
+        services = load_yaml(REPO_ROOT / compose_file)["services"]
         for service, config in services.items():
             names.add(service)
             if config.get("container_name"):

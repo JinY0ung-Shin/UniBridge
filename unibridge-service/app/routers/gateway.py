@@ -29,16 +29,21 @@ from app.routers.api_keys import apply_master_consumer_restriction, list_master_
 from app.services import apisix_client
 from app.services import node_path_prefix
 from app.services import openapi_export
-from app.services.apisix_client import upstream_node_addresses
+from app.services.apisix_client import (
+    route_paths,
+    upstream_host_header,
+    upstream_node_addresses,
+    upstream_scheme,
+)
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import MASK_KEEP, MASK_PREFIX, log_admin_action, mask_secret
 from app.services.settings_manager import settings_manager
 from app.services.apisix_system_resources import (
     MCP_API_ROUTE_ID,
-    MCP_REMOTE_RELAY_PATH_PREFIX,
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,  # noqa: F401 -- tests import it from here
+    SYSTEM_ROUTE_URIS,
     is_mcp_remote_resource,
     is_system_route,
     is_system_upstream,
@@ -185,25 +190,6 @@ async def sync_default_route_timeout(seconds: int) -> int:
         except Exception:
             logger.warning("Failed to apply default timeout to route %s", route_id, exc_info=True)
     return patched
-
-
-def _http_scheme_for_upstream(upstream: dict[str, Any]) -> str:
-    scheme = upstream.get("scheme")
-    return scheme if scheme in {"http", "https"} else "http"
-
-
-def _node_host(node_addr: str) -> str:
-    host, _sep, _port = node_addr.rpartition(":")
-    return host.strip("[]") if host else node_addr.strip("[]")
-
-
-def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
-    pass_host = upstream.get("pass_host", "pass")
-    if pass_host == "node":
-        return _node_host(node_addr)
-    if pass_host == "rewrite" and isinstance(upstream.get("upstream_host"), str):
-        return upstream["upstream_host"]
-    return settings.HOST_IP
 
 
 # Headers the startup provisioning injects on system routes, lowercased because
@@ -495,41 +481,6 @@ async def get_route(
 # turns the opaque schema error into a clean 400.
 _ROUTE_NAME_MAX_LEN = 100
 
-# Paths of the routes provisioned at startup (app/main.py's APISIX provisioning
-# block — keep in sync when a route is added there; tests/test_main.py checks
-# every provisioned path is covered). Held as a constant so the shadowing guard
-# below still stands when the live APISIX listing is unavailable.
-_SYSTEM_ROUTE_URIS = (
-    "/api/query/*",
-    "/api/query/templates/*",
-    "/api/s3/*",
-    "/api/nas/*",
-    "/api/usages",
-    # mcp-api (``uris``): the MCP endpoint and the artifact transfers.
-    "/api/mcp",
-    "/api/mcp/artifacts",
-    "/api/mcp/artifacts/*",
-    # network-api and network-write-api (same uri, split by method).
-    "/api/network/*",
-    "/api/prometheus/*",
-    "/api/llm/*",
-    "/api/llm/v1/messages",
-    "/api/llm/v1/responses",
-    # The whole prefix: llm-bi-not-found answers all of it since the Bifrost
-    # side-by-side test was removed (llm_routes.retired_llm_bi_route).
-    "/api/llm-bi/*",
-    # The external MCP servers' relay routes (mcp_remote.relay_path), which
-    # carry the relay secret and the callers' tokens.
-    f"{MCP_REMOTE_RELAY_PATH_PREFIX}*",
-)
-
-
-def _route_paths(route: dict[str, Any]) -> list[str]:
-    """Every path a route serves: its ``uri`` and, for a route with several, ``uris``."""
-    raw_uris = route.get("uris")
-    paths = [route.get("uri"), *(raw_uris if isinstance(raw_uris, list) else [])]
-    return [path for path in paths if isinstance(path, str)]
-
 
 def _uri_namespace(uri: str) -> str:
     """The path prefix a route uri governs, minus any trailing APISIX wildcard."""
@@ -766,10 +717,10 @@ async def save_route(
         # The live listing covers a system route whose uri drifted from the
         # provisioning constants; the constants cover a listing that came back
         # without it, so an APISIX hiccup cannot open the namespace.
-        system_uris = set(_SYSTEM_ROUTE_URIS)
+        system_uris = set(SYSTEM_ROUTE_URIS)
         for item in all_routes:
             if is_system_route(item.get("id")):
-                system_uris.update(_route_paths(item))
+                system_uris.update(route_paths(item))
         shadowed = _shadowed_system_uri(uri, sorted(system_uris))
         if shadowed:
             raise HTTPException(
@@ -948,14 +899,13 @@ async def test_route(
         )
 
     first_addr = addresses[0]
-    scheme = _http_scheme_for_upstream(upstream)
+    scheme = upstream_scheme(upstream)
     url = f"{scheme}://{first_addr}/health"
     start = time.monotonic()
     try:
-        ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
         headers = _service_headers_for_route(route)
-        headers.setdefault("Host", _host_header_for_upstream(upstream, first_addr))
-        async with httpx.AsyncClient(timeout=5.0, verify=ssl_verify) as client:
+        headers.setdefault("Host", upstream_host_header(upstream, first_addr))
+        async with httpx.AsyncClient(timeout=5.0, verify=settings.httpx_verify) as client:
             resp = await client.get(url, headers=headers)
         elapsed_ms = round((time.monotonic() - start) * 1000)
         body: Any = None
@@ -1915,7 +1865,9 @@ def _comparison_table(
     then the ungrouped total, which is the share denominator. One row per
     ``label`` value with at least one (rounded) request: the value under
     ``label``, ``extra(value)``'s fields, then requests, share, error rate and
-    p50/p95 latency in ms (the quantiles times ``latency_scale``; NaN → None).
+    p50/p95 latency in ms (the quantiles times ``latency_scale``; NaN and ±Inf
+    → None: histogram_quantile answers +Inf when the quantile falls in the
+    +Inf bucket, which JSON cannot carry).
     """
     requests_res, errors_res, p50_res, p95_res, total_res = results
     requests_map = prometheus_client.map_by_label(requests_res, label, empty=empty)
@@ -1925,7 +1877,7 @@ def _comparison_table(
     total = _extract_scalar(total_res)
 
     def latency_ms(value: float | None) -> float | None:
-        if value is None or math.isnan(value):
+        if value is None or not math.isfinite(value):
             return None
         return round(value * latency_scale, 2)
 

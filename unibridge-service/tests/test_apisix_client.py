@@ -11,13 +11,7 @@ import pytest
 
 from app.config import settings
 from app.services import apisix_client
-
-
-def _status_error(status: int, url: str = "http://apisix/apisix/admin/routes/r1") -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", url)
-    return httpx.HTTPStatusError(
-        "error", request=request, response=httpx.Response(status, request=request)
-    )
+from tests.helpers import http_status_error
 
 
 # ── Admin API ───────────────────────────────────────────────────────────────
@@ -64,7 +58,7 @@ async def test_an_error_status_raises():
 
 @pytest.mark.parametrize(
     ("resource", "resource_id"),
-    [("nodes", "r1"), ("routes", "../etc"), ("routes", "a/b")],
+    [("nodes", "r1"), ("routes", "../etc"), ("routes", "a/b"), ("routes", "r1\n")],
 )
 async def test_unsafe_resource_paths_are_refused_before_any_request(resource, resource_id):
     instance = AsyncMock()
@@ -80,10 +74,10 @@ async def test_unsafe_resource_paths_are_refused_before_any_request(resource, re
 @pytest.mark.parametrize(
     ("exc", "missing"),
     [
-        (_status_error(404), True),
+        (http_status_error(404), True),
         # A status error answers by its status, even when its URL says 404.
-        (_status_error(500, "http://apisix/apisix/admin/routes/err-404"), False),
-        (_status_error(503), False),
+        (http_status_error(500, url="http://apisix/apisix/admin/routes/err-404"), False),
+        (http_status_error(503), False),
         (RuntimeError("APISIX 404 not found: routes/x"), True),
         (RuntimeError("Route Not Found"), True),
         (httpx.ConnectError("All connection attempts failed"), False),
@@ -95,7 +89,7 @@ def test_is_not_found(exc, missing):
 
 async def test_get_resource_or_none():
     route = {"id": "r1"}
-    get = AsyncMock(side_effect=[route, _status_error(404), _status_error(500)])
+    get = AsyncMock(side_effect=[route, http_status_error(404), http_status_error(500)])
 
     with patch("app.services.apisix_client.get_resource", get):
         assert await apisix_client.get_resource_or_none("routes", "r1") == route

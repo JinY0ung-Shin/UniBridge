@@ -4,10 +4,10 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AlertState
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 @pytest.fixture(autouse=True)
@@ -154,7 +154,7 @@ async def test_disable_clears_alert_state(client, admin_token, seeded_db):
                                 json={"name": "svc-state", "address": "1.2.3.4:9000"})
     service_id = created.json()["id"]
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(AlertState(alert_type="external_service_down", target="svc-state", status="alert"))
         await db.commit()

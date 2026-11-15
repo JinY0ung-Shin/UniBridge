@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db_types import as_utc
 from app.models import ApiKeyAccess
 from app.services import apisix_client
 from app.services.active_color import run_periodic
@@ -102,12 +103,9 @@ def is_expired(access: ApiKeyAccess, now: datetime | None = None) -> bool:
     Naive values (legacy rows, or objects built in memory) are read as UTC, the
     same contract :class:`app.db_types.UtcDateTime` applies on load.
     """
-    expires_at = access.expires_at
-    if expires_at is None:
+    if access.expires_at is None:
         return False
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    return expires_at <= (now or datetime.now(timezone.utc))
+    return as_utc(access.expires_at) <= (now or datetime.now(timezone.utc))
 
 
 def effective_allowed_routes(

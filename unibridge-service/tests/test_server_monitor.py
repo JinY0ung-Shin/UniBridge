@@ -18,33 +18,15 @@ from app.services.server_monitor import (
     metric_query,
 )
 from app.services.alert_state import AlertStateManager
-
-
-def _host(name="web1", address="10.0.0.1:9100", enabled=True, labels=None, **overrides):
-    return SimpleNamespace(
-        name=name, address=address, enabled=enabled, labels=labels,
-        description=overrides.get("description", ""),
-        disk_warn_pct=overrides.get("disk_warn_pct"),
-        disk_crit_pct=overrides.get("disk_crit_pct"),
-        cpu_warn_pct=overrides.get("cpu_warn_pct"),
-        mem_warn_pct=overrides.get("mem_warn_pct"),
-        disk_mountpoints=overrides.get("disk_mountpoints"),
-        gpu_address=overrides.get("gpu_address"),
-        gpu_util_warn_pct=overrides.get("gpu_util_warn_pct"),
-        gpu_mem_warn_pct=overrides.get("gpu_mem_warn_pct"),
-    )
-
-
-def _series(host, value):
-    return {"metric": {"host": host}, "value": [0, str(value)]}
+from tests.helpers import host_series, monitored_host
 
 
 # ── file_sd ──────────────────────────────────────────────────────────────────
 
 def test_build_targets_skips_disabled_and_merges_labels():
     hosts = [
-        _host("web1", "10.0.0.1:9100", labels='{"env":"prod"}'),
-        _host("web2", "10.0.0.2:9100", enabled=False),
+        monitored_host("web1", "10.0.0.1:9100", labels='{"env":"prod"}'),
+        monitored_host("web2", "10.0.0.2:9100", enabled=False),
     ]
     entries = build_targets(hosts)
     assert len(entries) == 1
@@ -53,7 +35,7 @@ def test_build_targets_skips_disabled_and_merges_labels():
 
 
 def test_build_targets_user_label_cannot_clobber_host():
-    entries = build_targets([_host("web1", labels='{"host":"evil"}')])
+    entries = build_targets([monitored_host("web1", labels='{"host":"evil"}')])
     assert entries[0]["labels"]["host"] == "web1"
 
 
@@ -65,7 +47,7 @@ async def test_write_targets_file_is_world_readable(tmp_path):
     import stat
 
     path = tmp_path / "nodes.json"
-    await server_monitor.write_targets_file([_host("web1", "10.0.0.1:39100")], str(path))
+    await server_monitor.write_targets_file([monitored_host("web1", "10.0.0.1:39100")], str(path))
 
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode & stat.S_IROTH, f"targets file not other-readable: {oct(mode)}"
@@ -83,9 +65,9 @@ def test_gpu_alert_types_belong_to_the_server_family():
 
 def test_build_gpu_targets_only_covers_gpu_enabled_hosts():
     hosts = [
-        _host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400", labels='{"env":"prod"}'),
-        _host("web1", "10.0.0.2:9100"),  # no dcgm-exporter → not a GPU target
-        _host("gpu2", "10.0.0.3:9100", gpu_address="10.0.0.3:9400", enabled=False),
+        monitored_host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400", labels='{"env":"prod"}'),
+        monitored_host("web1", "10.0.0.2:9100"),  # no dcgm-exporter → not a GPU target
+        monitored_host("gpu2", "10.0.0.3:9100", gpu_address="10.0.0.3:9400", enabled=False),
     ]
     entries = build_gpu_targets(hosts)
     assert len(entries) == 1
@@ -95,7 +77,7 @@ def test_build_gpu_targets_only_covers_gpu_enabled_hosts():
 
 def test_build_gpu_targets_user_label_cannot_clobber_host():
     entries = build_gpu_targets(
-        [_host("gpu1", gpu_address="10.0.0.1:9400", labels='{"host":"evil"}')]
+        [monitored_host("gpu1", gpu_address="10.0.0.1:9400", labels='{"host":"evil"}')]
     )
     assert entries[0]["labels"]["host"] == "gpu1"
 
@@ -107,7 +89,7 @@ async def test_write_gpu_targets_file_is_world_readable(tmp_path):
 
     path = tmp_path / "gpus.json"
     await server_monitor.write_gpu_targets_file(
-        [_host("gpu1", "10.0.0.1:39100", gpu_address="10.0.0.1:9400")], str(path)
+        [monitored_host("gpu1", "10.0.0.1:39100", gpu_address="10.0.0.1:9400")], str(path)
     )
 
     mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -119,8 +101,8 @@ async def test_sync_targets_from_db_writes_node_and_gpu_files(tmp_path):
     import json
 
     hosts = [
-        _host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400"),
-        _host("web1", "10.0.0.2:9100"),
+        monitored_host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400"),
+        monitored_host("web1", "10.0.0.2:9100"),
     ]
 
     class _FakeDB:
@@ -205,9 +187,9 @@ def test_disk_mountpoint_selector_escapes_regex_metacharacters_for_promql_string
 
 def test_disk_queries_group_per_host_mountpoint_overrides():
     hosts = [
-        _host("web1", disk_mountpoints="/data"),
-        _host("web2", disk_mountpoints="/backup"),
-        _host("web3"),
+        monitored_host("web1", disk_mountpoints="/data"),
+        monitored_host("web2", disk_mountpoints="/backup"),
+        monitored_host("web3"),
     ]
     with patch.object(server_monitor.settings, "NODE_EXPORTER_DISK_MOUNTPOINTS", "/"):
         q = server_monitor._q_disk_pct_for_hosts(hosts)
@@ -223,8 +205,8 @@ def test_disk_queries_group_per_host_mountpoint_overrides():
 
 def test_disk_queries_escape_grouped_host_regex_values():
     hosts = [
-        _host("web.1", disk_mountpoints="/data"),
-        _host("web2", disk_mountpoints="/data"),
+        monitored_host("web.1", disk_mountpoints="/data"),
+        monitored_host("web2", disk_mountpoints="/data"),
     ]
 
     q = server_monitor._q_disk_pct_for_hosts(hosts)
@@ -255,14 +237,14 @@ def _patch_queries(mapping):
 
 
 async def test_disk_warning_and_critical_severity():
-    hosts = [_host("web1")]
+    hosts = [monitored_host("web1")]
     th = ServerThresholds(disk_warn_pct=80, disk_crit_pct=90, forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            "up{": [_series("web1", 1)],
-            "node_filesystem_avail_bytes": [_series("web1", 85)],
-            "node_cpu_seconds_total": [_series("web1", 10)],
-            "node_memory_MemAvailable_bytes": [_series("web1", 10)],
+            "up{": [host_series("web1", 1)],
+            "node_filesystem_avail_bytes": [host_series("web1", 85)],
+            "node_cpu_seconds_total": [host_series("web1", 10)],
+            "node_memory_MemAvailable_bytes": [host_series("web1", 10)],
         })
         signals = await evaluate_hosts(hosts, th)
     disk = next(s for s in signals if s.alert_type == "server_disk")
@@ -270,10 +252,10 @@ async def test_disk_warning_and_critical_severity():
 
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            "up{": [_series("web1", 1)],
-            "node_filesystem_avail_bytes": [_series("web1", 95)],
-            "node_cpu_seconds_total": [_series("web1", 10)],
-            "node_memory_MemAvailable_bytes": [_series("web1", 10)],
+            "up{": [host_series("web1", 1)],
+            "node_filesystem_avail_bytes": [host_series("web1", 95)],
+            "node_cpu_seconds_total": [host_series("web1", 10)],
+            "node_memory_MemAvailable_bytes": [host_series("web1", 10)],
         })
         signals = await evaluate_hosts(hosts, th)
     disk = next(s for s in signals if s.alert_type == "server_disk")
@@ -283,8 +265,8 @@ async def test_disk_warning_and_critical_severity():
 async def test_down_host_skips_other_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _patch_queries({"up{": [_series("web1", 0)]})
-        signals = await evaluate_hosts([_host("web1", description="Primary web node")], th)
+        q.side_effect = _patch_queries({"up{": [host_series("web1", 0)]})
+        signals = await evaluate_hosts([monitored_host("web1", description="Primary web node")], th)
     types = {s.alert_type for s in signals}
     assert types == {"server_down"}
     down = signals[0]
@@ -296,17 +278,17 @@ async def test_missing_up_series_is_treated_as_down():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({"up{": []})  # host not scraped yet
-        signals = await evaluate_hosts([_host("web1")], th)
+        signals = await evaluate_hosts([monitored_host("web1")], th)
     assert signals[0].alert_type == "server_down" and signals[0].is_healthy is False
 
 
 async def test_per_host_threshold_override():
     th = ServerThresholds(disk_warn_pct=80, disk_crit_pct=90, forecast_hours=0)
-    host = _host("web1", disk_warn_pct=50)
+    host = monitored_host("web1", disk_warn_pct=50)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            "up{": [_series("web1", 1)],
-            "node_filesystem_avail_bytes": [_series("web1", 60)],
+            "up{": [host_series("web1", 1)],
+            "node_filesystem_avail_bytes": [host_series("web1", 60)],
         })
         signals = await evaluate_hosts([host], th)
     disk = next(s for s in signals if s.alert_type == "server_disk")
@@ -318,10 +300,10 @@ async def test_disk_invalid_threshold_order_still_alerts_at_critical():
     th = ServerThresholds(disk_warn_pct=95, disk_crit_pct=90, forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            "up{": [_series("web1", 1)],
-            "node_filesystem_avail_bytes": [_series("web1", 92)],
+            "up{": [host_series("web1", 1)],
+            "node_filesystem_avail_bytes": [host_series("web1", 92)],
         })
-        signals = await evaluate_hosts([_host("web1")], th)
+        signals = await evaluate_hosts([monitored_host("web1")], th)
     disk = next(s for s in signals if s.alert_type == "server_disk")
     assert disk.severity == "critical"
     assert disk.is_healthy is False
@@ -332,23 +314,23 @@ async def test_disk_forecast_fires_when_predicted_negative():
     th = ServerThresholds(forecast_hours=24)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            "up{": [_series("web1", 1)],
-            "predict_linear": [_series("web1", -100)],
-            "node_filesystem_avail_bytes": [_series("web1", 50)],
+            "up{": [host_series("web1", 1)],
+            "predict_linear": [host_series("web1", -100)],
+            "node_filesystem_avail_bytes": [host_series("web1", 50)],
         })
-        signals = await evaluate_hosts([_host("web1")], th)
+        signals = await evaluate_hosts([monitored_host("web1")], th)
     forecast = next(s for s in signals if s.alert_type == "server_disk_forecast")
     assert forecast.is_healthy is False and forecast.severity == "warning"
 
 
 async def test_prometheus_failure_skips_cycle():
     with patch.object(server_monitor.prometheus_client, "instant_query", new=AsyncMock(side_effect=RuntimeError("down"))):
-        signals = await evaluate_hosts([_host("web1")], ServerThresholds())
+        signals = await evaluate_hosts([monitored_host("web1")], ServerThresholds())
     assert signals == []
 
 
 async def test_no_enabled_hosts_returns_empty():
-    assert await evaluate_hosts([_host(enabled=False)], ServerThresholds()) == []
+    assert await evaluate_hosts([monitored_host(enabled=False)], ServerThresholds()) == []
 
 
 # ── GPU evaluation ────────────────────────────────────────────────────────────
@@ -356,18 +338,18 @@ async def test_no_enabled_hosts_returns_empty():
 def _gpu_queries(node_up=1, gpu_up=1, util=50, mem=50, host="gpu1"):
     """Prometheus stubs for one GPU host, keyed by the two distinct up{} jobs."""
     return _patch_queries({
-        'up{job="gpu-nodes"}': [_series(host, gpu_up)],
-        'up{job="nodes"}': [_series(host, node_up)],
-        "DCGM_FI_DEV_GPU_UTIL": [_series(host, util)],
-        "DCGM_FI_DEV_FB_USED": [_series(host, mem)],
+        'up{job="gpu-nodes"}': [host_series(host, gpu_up)],
+        'up{job="nodes"}': [host_series(host, node_up)],
+        "DCGM_FI_DEV_GPU_UTIL": [host_series(host, util)],
+        "DCGM_FI_DEV_FB_USED": [host_series(host, mem)],
     })
 
 
 async def test_host_without_gpu_address_gets_no_gpu_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _patch_queries({"up{": [_series("web1", 1)]})
-        signals = await evaluate_hosts([_host("web1")], th)
+        q.side_effect = _patch_queries({"up{": [host_series("web1", 1)]})
+        signals = await evaluate_hosts([monitored_host("web1")], th)
     assert not [s for s in signals if s.alert_type.startswith("server_gpu")]
     # The dcgm queries are not even issued when no host opted in.
     assert not [call for call in q.call_args_list if "DCGM" in call.args[0]]
@@ -378,7 +360,7 @@ async def test_down_node_reports_no_gpu_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _gpu_queries(node_up=0)
-        signals = await evaluate_hosts([_host("gpu1", gpu_address="10.0.0.1:9400")], th)
+        signals = await evaluate_hosts([monitored_host("gpu1", gpu_address="10.0.0.1:9400")], th)
     assert {s.alert_type for s in signals} == {"server_down"}
 
 
@@ -386,7 +368,7 @@ async def test_gpu_scrape_down_suppresses_usage_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _gpu_queries(gpu_up=0, util=99, mem=99)
-        signals = await evaluate_hosts([_host("gpu1", gpu_address="10.0.0.1:9400")], th)
+        signals = await evaluate_hosts([monitored_host("gpu1", gpu_address="10.0.0.1:9400")], th)
     gpu_down = next(s for s in signals if s.alert_type == "server_gpu_down")
     assert gpu_down.is_healthy is False and gpu_down.severity == "critical"
     assert "dcgm-exporter" in gpu_down.message
@@ -396,15 +378,15 @@ async def test_gpu_scrape_down_suppresses_usage_signals():
 async def test_gpu_usage_thresholds_and_per_host_override():
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
     hosts = [
-        _host("gpu1", gpu_address="10.0.0.1:9400"),
-        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=50),
+        monitored_host("gpu1", gpu_address="10.0.0.1:9400"),
+        monitored_host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=50),
     ]
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            'up{job="gpu-nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
-            'up{job="nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
-            "DCGM_FI_DEV_GPU_UTIL": [_series("gpu1", 60), _series("gpu2", 60)],
-            "DCGM_FI_DEV_FB_USED": [_series("gpu1", 95), _series("gpu2", 10)],
+            'up{job="gpu-nodes"}': [host_series("gpu1", 1), host_series("gpu2", 1)],
+            'up{job="nodes"}': [host_series("gpu1", 1), host_series("gpu2", 1)],
+            "DCGM_FI_DEV_GPU_UTIL": [host_series("gpu1", 60), host_series("gpu2", 60)],
+            "DCGM_FI_DEV_FB_USED": [host_series("gpu1", 95), host_series("gpu2", 10)],
         })
         signals = await evaluate_hosts(hosts, th)
     by = {(s.alert_type, s.target): s for s in signals}
@@ -424,15 +406,15 @@ async def test_zero_gpu_threshold_disables_only_that_signal():
     """0 disables globally; a positive per-host value re-enables it for one host."""
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=0, gpu_mem_warn_pct=0)
     hosts = [
-        _host("gpu1", gpu_address="10.0.0.1:9400"),
-        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=80),
+        monitored_host("gpu1", gpu_address="10.0.0.1:9400"),
+        monitored_host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=80),
     ]
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            'up{job="gpu-nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
-            'up{job="nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
-            "DCGM_FI_DEV_GPU_UTIL": [_series("gpu1", 99), _series("gpu2", 99)],
-            "DCGM_FI_DEV_FB_USED": [_series("gpu1", 99), _series("gpu2", 99)],
+            'up{job="gpu-nodes"}': [host_series("gpu1", 1), host_series("gpu2", 1)],
+            'up{job="nodes"}': [host_series("gpu1", 1), host_series("gpu2", 1)],
+            "DCGM_FI_DEV_GPU_UTIL": [host_series("gpu1", 99), host_series("gpu2", 99)],
+            "DCGM_FI_DEV_FB_USED": [host_series("gpu1", 99), host_series("gpu2", 99)],
         })
         signals = await evaluate_hosts(hosts, th)
     emitted = {(s.alert_type, s.target) for s in signals}
@@ -446,7 +428,7 @@ async def test_zero_gpu_threshold_disables_only_that_signal():
 
 async def test_per_host_zero_gpu_threshold_disables_for_that_host():
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
-    host = _host("gpu1", gpu_address="10.0.0.1:9400", gpu_util_warn_pct=0)
+    host = monitored_host("gpu1", gpu_address="10.0.0.1:9400", gpu_util_warn_pct=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _gpu_queries(util=99, mem=99)
         signals = await evaluate_hosts([host], th)
@@ -462,7 +444,7 @@ _GPU_ADDRESS = "10.0.0.1:9400"
 
 def test_disabled_signals_reports_zero_gpu_thresholds():
     th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=24)
-    off = disabled_signals([_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
+    off = disabled_signals([monitored_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
     assert set(off) == {("server_gpu_util", "gpu1"), ("server_gpu_mem", "gpu1")}
     assert off[("server_gpu_util", "gpu1")].format(display="GPU 1") == (
         "Server 'GPU 1' GPU utilisation alerting is disabled (threshold 0); alert cleared."
@@ -476,8 +458,8 @@ def test_disabled_signals_respects_positive_per_host_override():
     """A per-host threshold re-enables one signal while the global 0 disables the other."""
     th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=24)
     hosts = [
-        _host("gpu1", gpu_address=_GPU_ADDRESS, gpu_util_warn_pct=80),
-        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400"),
+        monitored_host("gpu1", gpu_address=_GPU_ADDRESS, gpu_util_warn_pct=80),
+        monitored_host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400"),
     ]
     off = disabled_signals(hosts, th)
     assert ("server_gpu_util", "gpu1") not in off
@@ -487,7 +469,7 @@ def test_disabled_signals_respects_positive_per_host_override():
 
 def test_disabled_signals_covers_every_gpu_type_without_an_address():
     th = ServerThresholds(forecast_hours=24)
-    off = disabled_signals([_host("web1")], th)
+    off = disabled_signals([monitored_host("web1")], th)
     assert set(off) == {(t, "web1") for t in GPU_ALERT_TYPES}
     assert off[("server_gpu_down", "web1")].format(display="web1") == (
         "Server 'web1' GPU monitoring is disabled; alert cleared."
@@ -497,19 +479,19 @@ def test_disabled_signals_covers_every_gpu_type_without_an_address():
 def test_disabled_signals_never_disables_scrape_health_for_a_gpu_host():
     """server_gpu_down is not threshold-gated, so it is never retired on a GPU host."""
     th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=0)
-    off = disabled_signals([_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
+    off = disabled_signals([monitored_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
     assert ("server_gpu_down", "gpu1") not in off
 
 
 def test_disabled_signals_ignores_disabled_hosts():
     th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=0)
-    hosts = [_host("gpu1", gpu_address=_GPU_ADDRESS, enabled=False), _host("web1", enabled=False)]
+    hosts = [monitored_host("gpu1", gpu_address=_GPU_ADDRESS, enabled=False), monitored_host("web1", enabled=False)]
     assert disabled_signals(hosts, th) == {}
 
 
 def test_disabled_signals_reports_forecast_off_per_enabled_host():
     th = ServerThresholds(forecast_hours=0)
-    hosts = [_host("web1"), _host("gpu1", gpu_address=_GPU_ADDRESS)]
+    hosts = [monitored_host("web1"), monitored_host("gpu1", gpu_address=_GPU_ADDRESS)]
     off = disabled_signals(hosts, th)
     assert ("server_disk_forecast", "web1") in off
     assert ("server_disk_forecast", "gpu1") in off
@@ -734,10 +716,10 @@ def _failing_queries(mapping, failing):
 
 
 _UP_HOSTS = {
-    'up{job="nodes"}': [_series("web1", 1), _series("web2", 0)],
-    "node_filesystem_avail_bytes": [_series("web1", 50)],
-    "node_cpu_seconds_total": [_series("web1", 10)],
-    "node_memory_MemAvailable_bytes": [_series("web1", 10)],
+    'up{job="nodes"}': [host_series("web1", 1), host_series("web2", 0)],
+    "node_filesystem_avail_bytes": [host_series("web1", 50)],
+    "node_cpu_seconds_total": [host_series("web1", 10)],
+    "node_memory_MemAvailable_bytes": [host_series("web1", 10)],
 }
 
 
@@ -748,7 +730,7 @@ async def test_failed_metric_query_keeps_server_down_and_other_signals():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _failing_queries(_UP_HOSTS, ["predict_linear"])
         signals = await evaluate_hosts(
-            [_host("web1"), _host("web2", "10.0.0.2:9100")], th, failed_queries=failed
+            [monitored_host("web1"), monitored_host("web2", "10.0.0.2:9100")], th, failed_queries=failed
         )
     emitted = {(s.alert_type, s.target): s for s in signals}
     assert emitted[("server_down", "web2")].is_healthy is False
@@ -763,7 +745,7 @@ async def test_failed_up_query_skips_cycle_and_reports_it():
         server_monitor.prometheus_client, "instant_query",
         new=AsyncMock(side_effect=RuntimeError("down")),
     ):
-        signals = await evaluate_hosts([_host("web1")], ServerThresholds(), failed_queries=failed)
+        signals = await evaluate_hosts([monitored_host("web1")], ServerThresholds(), failed_queries=failed)
     assert signals == []
     assert failed == ["up"]
 
@@ -774,10 +756,10 @@ async def test_failed_gpu_up_query_emits_no_gpu_signals():
     failed: list[str] = []
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _failing_queries(
-            {'up{job="nodes"}': [_series("gpu1", 1)]}, ['up{job="gpu-nodes"}']
+            {'up{job="nodes"}': [host_series("gpu1", 1)]}, ['up{job="gpu-nodes"}']
         )
         signals = await evaluate_hosts(
-            [_host("gpu1", gpu_address="10.0.0.1:9400")], th, failed_queries=failed
+            [monitored_host("gpu1", gpu_address="10.0.0.1:9400")], th, failed_queries=failed
         )
     types = {s.alert_type for s in signals}
     assert "server_down" in types
@@ -787,7 +769,7 @@ async def test_failed_gpu_up_query_emits_no_gpu_signals():
 
 async def test_zero_cpu_and_memory_thresholds_disable_the_signals():
     th = ServerThresholds(forecast_hours=0, cpu_warn_pct=0)
-    host = _host("web1", mem_warn_pct=0)
+    host = monitored_host("web1", mem_warn_pct=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries(_UP_HOSTS)
         signals = await evaluate_hosts([host], th)
@@ -801,10 +783,10 @@ async def test_zero_disk_warn_alerts_at_critical_only():
     for pct, healthy, severity in ((50, True, None), (95, False, "critical")):
         with patch.object(server_monitor.prometheus_client, "instant_query") as q:
             q.side_effect = _patch_queries({
-                'up{job="nodes"}': [_series("web1", 1)],
-                "node_filesystem_avail_bytes": [_series("web1", pct)],
+                'up{job="nodes"}': [host_series("web1", 1)],
+                "node_filesystem_avail_bytes": [host_series("web1", pct)],
             })
-            signals = await evaluate_hosts([_host("web1")], th)
+            signals = await evaluate_hosts([monitored_host("web1")], th)
         disk = next(s for s in signals if s.alert_type == "server_disk")
         assert (disk.is_healthy, disk.severity, disk.threshold) == (healthy, severity, 90)
         assert "warn off / crit 90%" in disk.message
@@ -814,11 +796,11 @@ async def test_zero_disk_thresholds_disable_disk_but_keep_forecast():
     th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=0, forecast_hours=24)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
-            'up{job="nodes"}': [_series("web1", 1)],
-            "predict_linear": [_series("web1", -1)],
-            "node_filesystem_avail_bytes": [_series("web1", 99)],
+            'up{job="nodes"}': [host_series("web1", 1)],
+            "predict_linear": [host_series("web1", -1)],
+            "node_filesystem_avail_bytes": [host_series("web1", 99)],
         })
-        signals = await evaluate_hosts([_host("web1")], th)
+        signals = await evaluate_hosts([monitored_host("web1")], th)
     types = {s.alert_type for s in signals}
     assert "server_disk" not in types
     assert "server_disk_forecast" in types
@@ -826,7 +808,7 @@ async def test_zero_disk_thresholds_disable_disk_but_keep_forecast():
 
 def test_disabled_signals_reports_zero_disk_cpu_and_memory_thresholds():
     th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=0, cpu_warn_pct=0, forecast_hours=24)
-    hosts = [_host("web1", mem_warn_pct=0), _host("web2", "10.0.0.2:9100", cpu_warn_pct=70)]
+    hosts = [monitored_host("web1", mem_warn_pct=0), monitored_host("web2", "10.0.0.2:9100", cpu_warn_pct=70)]
     off = disabled_signals(hosts, th)
     assert {k for k in off if k[0] in ("server_disk", "server_cpu", "server_mem")} == {
         ("server_disk", "web1"), ("server_cpu", "web1"), ("server_mem", "web1"),
@@ -839,7 +821,7 @@ def test_disabled_signals_reports_zero_disk_cpu_and_memory_thresholds():
 
 def test_disabled_signals_keeps_disk_on_when_only_warn_is_zero():
     th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=90, forecast_hours=24)
-    assert ("server_disk", "web1") not in disabled_signals([_host("web1")], th)
+    assert ("server_disk", "web1") not in disabled_signals([monitored_host("web1")], th)
 
 
 async def test_evaluate_services_reports_failed_query():

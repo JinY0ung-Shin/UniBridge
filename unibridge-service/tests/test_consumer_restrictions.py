@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess
 from app.services import consumer_restrictions as cr
@@ -23,10 +22,7 @@ from app.services.consumer_restrictions import (
     MASTER_ACCESS,
     reconcile_consumer_route_restrictions,
 )
-
-
-def _session_factory(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+from tests.helpers import sessions
 
 
 def _key_auth_route(route_id: str, whitelist: list[str] | None = None) -> dict:
@@ -64,7 +60,7 @@ def _whitelist(stub: MagicMock, route_id: str) -> list[str]:
 
 
 async def _add_keys(engine, *keys: ApiKeyAccess) -> None:
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         for key in keys:
             db.add(key)
         await db.commit()
@@ -136,7 +132,7 @@ async def test_expired_consumer_is_removed_from_every_key_auth_route(engine):
         _key_auth_route("llm-messages", ["lapsed"]),
     ])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert _whitelist(stub, "query-api") == ["other"]
@@ -151,7 +147,7 @@ async def test_consumers_unknown_to_the_database_are_left_alone(engine):
     await _add_keys(engine, _key("ours", ["query-api"]))
     stub = _apisix_stub([_key_auth_route("query-api", ["stranger"])])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert _whitelist(stub, "query-api") == ["ours", "stranger"]
@@ -162,7 +158,7 @@ async def test_emptied_whitelist_gets_the_deny_all_sentinel(engine):
     await _add_keys(engine, _key("lapsed", ["query-api"], expires_in_days=-1))
     stub = _apisix_stub([_key_auth_route("query-api", ["lapsed"])])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert _whitelist(stub, "query-api") == [DENY_ALL_CONSUMER]
@@ -173,7 +169,7 @@ async def test_a_live_consumer_missing_from_its_route_is_added_back(engine):
     await _add_keys(engine, _key("live", ["query-api"], expires_in_days=10))
     stub = _apisix_stub([_key_auth_route("query-api", [DENY_ALL_CONSUMER])])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert _whitelist(stub, "query-api") == ["live"]
@@ -187,7 +183,7 @@ async def test_only_routes_whose_whitelist_changed_are_put(engine):
         _key_auth_route("nas-api", ["live"]),            # must lose "live"
     ])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert stub.put_resource.await_count == 1
@@ -204,7 +200,7 @@ async def test_master_wildcard_covers_every_key_auth_route(engine):
         _key_auth_route("llm-metrics", []),
     ])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     for route_id in ("query-api", "nas-api", "llm-metrics"):
@@ -222,7 +218,7 @@ async def test_llm_proxy_implies_the_converter_routes_but_never_llm_metrics(engi
         _key_auth_route("query-api", []),
     ])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     for route_id in ("llm-proxy", "llm-messages", "llm-responses", "llm-models"):
@@ -242,7 +238,7 @@ async def test_malformed_row_keeps_its_whitelist_and_is_reported(engine, caplog)
     stub = _apisix_stub([_key_auth_route("query-api", ["bad-app"])])
 
     with caplog.at_level(logging.WARNING, logger="app.services.consumer_restrictions"):
-        async with _session_factory(engine)() as db:
+        async with sessions(engine)() as db:
             result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert result.skipped_malformed == ["bad-app"]
@@ -261,7 +257,7 @@ async def test_one_failing_put_still_attempts_the_rest_then_raises(engine):
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        async with _session_factory(engine)() as db:
+        async with sessions(engine)() as db:
             await reconcile_consumer_route_restrictions(db, client=stub)
 
     assert stub.put_resource.await_count == 2
@@ -279,7 +275,7 @@ async def test_routes_without_key_auth_are_ignored(engine):
         {"id": "jwt-only", "uri": "/jwt/*", "plugins": {"jwt-auth": {}}},
     ])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     stub.put_resource.assert_not_awaited()
@@ -292,7 +288,7 @@ async def test_no_keys_means_no_apisix_call_at_all(engine):
     must not make startup depend on APISIX being reachable."""
     stub = _apisix_stub([_key_auth_route("query-api", ["stranger"])])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     stub.list_resources.assert_not_awaited()
@@ -308,7 +304,7 @@ async def test_a_route_without_an_id_is_skipped(engine):
     )
     stub.put_resource = AsyncMock()
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         await reconcile_consumer_route_restrictions(db, client=stub)
 
     stub.put_resource.assert_not_awaited()
@@ -319,7 +315,7 @@ async def test_reconcile_honours_an_injected_now(engine):
     await _add_keys(engine, _key("soon", ["query-api"], expires_in_days=1))
     stub = _apisix_stub([_key_auth_route("query-api", ["soon"])])
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         result = await reconcile_consumer_route_restrictions(
             db, now=datetime.now(timezone.utc) + timedelta(days=2), client=stub
         )
@@ -336,7 +332,7 @@ async def test_a_steady_state_writes_nothing_and_logs_nothing(engine, caplog):
     ])
 
     with caplog.at_level(logging.INFO, logger="app.services.consumer_restrictions"):
-        async with _session_factory(engine)() as db:
+        async with sessions(engine)() as db:
             result = await reconcile_consumer_route_restrictions(db, client=stub)
 
     stub.put_resource.assert_not_awaited()
@@ -386,7 +382,7 @@ async def test_loop_makes_no_apisix_call_on_the_standby_color(engine):
 
     with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.consumer_restrictions.apisix_client", apisix), \
-         patch("app.database.async_session", _session_factory(engine)), \
+         patch("app.database.async_session", sessions(engine)), \
          patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=False)):
         with pytest.raises(asyncio.CancelledError):
@@ -411,7 +407,7 @@ async def test_loop_reconciles_through_the_module_client_on_the_active_color(eng
 
     with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.consumer_restrictions.apisix_client", stub), \
-         patch("app.database.async_session", _session_factory(engine)), \
+         patch("app.database.async_session", sessions(engine)), \
          patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=True)):
         with pytest.raises(asyncio.CancelledError):
@@ -464,5 +460,5 @@ async def test_list_master_consumer_names_excludes_an_expired_master(engine):
         ),
     )
 
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         assert await list_master_consumer_names(db) == ["live-master"]

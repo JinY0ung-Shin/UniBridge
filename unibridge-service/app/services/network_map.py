@@ -57,6 +57,8 @@ from app.schemas import (
     RegionResponse,
 )
 from app.services import apisix_client
+# Re-exported: routers/network.py calls network_map.split_host_port.
+from app.services.apisix_client import split_host_port
 from app.services.meta_store import load_config_model, save_config_model
 
 logger = logging.getLogger(__name__)
@@ -103,23 +105,6 @@ def parse_ip(value: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address
         return ipaddress.ip_address(value.strip().strip("[]"))
     except ValueError:
         return None
-
-
-def split_host_port(address: str | None) -> tuple[str, int | None] | None:
-    """``host:port`` / ``[v6]:port`` / ``host`` → (host, port or None)."""
-    if not address:
-        return None
-    address = address.strip()
-    if address.startswith("["):
-        host, _, rest = address[1:].partition("]")
-        port = rest[1:] if rest.startswith(":") else ""
-    elif address.count(":") == 1:
-        host, _, port = address.partition(":")
-    else:
-        host, port = address, ""
-    if not host:
-        return None
-    return host, int(port) if port.isdigit() else None
 
 
 def port_label(protocol: str, port_from: int, port_to: int) -> str:

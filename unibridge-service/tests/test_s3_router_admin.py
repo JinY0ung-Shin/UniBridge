@@ -13,6 +13,7 @@ from starlette.requests import Request
 from app.routers import s3 as s3_router
 from app.services.s3_manager import S3ListAllBusyError
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 def _client_error(code: str, op: str = "ListObjectsV2") -> ClientError:
@@ -805,12 +806,10 @@ def _restricted_payload(alias: str, **overrides) -> dict:
 async def _stored_allowed_buckets_json(seeded_db, alias: str) -> str | None:
     """Raw column value, to prove the list is persisted as JSON text."""
     from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from app.models import S3Connection
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(
             select(S3Connection.allowed_buckets).where(S3Connection.alias == alias)
         )

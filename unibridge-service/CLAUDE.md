@@ -5,9 +5,11 @@ Python 3.12, SQLAlchemy async + Alembic. Meta store = Postgres when deployed, SQ
 
 ## Layout
 - `app/main.py`        — FastAPI app + lifespan: validate settings, `init_db()`, load DB/S3/NAS
-  connections, re-provision the fixed APISIX system routes (`_provision_llm_routes`,
-  the llm-bi-not-found 404, node-path-prefix rule), sync API-key route restrictions, start
-  the alert checker and retention/key-expiry loops. Mounts all routers.
+  connections, re-provision the fixed APISIX system routes (`_provision_system_routes` from
+  the `ServiceRoute` table, `_provision_llm_routes`, the llm-bi-not-found 404, node-path-prefix
+  rule; boot retries go through `_retry_at_boot`), sync API-key route restrictions, start
+  the alert checker and the periodic loops. `_BACKGROUND_TASKS` is the shutdown order
+  (the alert checker stops last). Mounts all routers.
 - `app/auth.py`        — JWT verify (Keycloak RS256 / dev HS256), `ALL_PERMISSIONS`, RBAC
   + 60s permission cache, API-key auth.
 - `app/config.py`      — `Settings` (pydantic-settings) + `validate_settings()` fail-fast.
@@ -18,6 +20,15 @@ Python 3.12, SQLAlchemy async + Alembic. Meta store = Postgres when deployed, SQ
   S3/NAS managers, SQL/SPARQL validators, audit, openapi export,
   `consumer_restrictions.py` (reconciles APISIX consumer-restriction whitelists
   with the API-key store — this is where key expiry is enforced at the gateway), etc.
+  Shared helpers live there too, not in a router: `apisix_client.py` (admin API plus
+  `route_paths`, `is_not_found`/`get_resource_or_none`, `split_host_port`, and
+  `upstream_scheme`/`node_host`/`upstream_host_header` to probe a node the way APISIX does),
+  `apisix_system_resources.py` (system ids and the fixed `ServiceRoute` table),
+  `meta_store.py` (`advisory_section`: a critical section across both blue/green colors;
+  `load_config_model`/`save_config_model`: settings kept as JSON in `system_config`),
+  `capped_read.py` (`read_capped`: a body read whole up to a size limit),
+  `active_color.py` (`run_periodic`: a background loop on the active color) and
+  `prometheus_client.py` (`http_error`, `map_by_label`). UTC helpers: `app/db_types.py`.
 - `app/middleware/rate_limiter.py` — per-user rate + concurrency limits.
 
 ## Migrations
@@ -43,4 +54,9 @@ Changing the system roles (`ALL_PERMISSIONS` or `database._seed_role_definitions
   `app`/`client` (ASGI `AsyncClient` on the seeded DB), `admin_token`/`user_token` + `auth_header()`.
   A test that changes roles/permissions itself must `await invalidate_permission_cache()`
   (as `querier_token` does); the fixtures only invalidate after their own seeding.
+- Shared helpers go in `tests/helpers.py` (`run_lifespan`, `sessions`, `insert_api_key`/
+  `create_api_key_via_admin`, `make_role_token`, `http_status_error`, `FakeApisix`, …),
+  `tests/mcp_helpers.py` (MCP RPC helpers, `FakeGateway`) and `tests/http_mock.py` (the
+  `http_mock` fixture on `httpx.MockTransport`; pytest-httpx is gone). Test modules never
+  import from each other.
 - No ruff config file → ruff defaults.

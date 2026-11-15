@@ -13,12 +13,9 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+from tests.helpers import BLUEGREEN_INFRA_COMPOSE_FILE, COMPOSE_FILE, REPO_ROOT, load_yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
-BLUEGREEN_INFRA_COMPOSE_FILE = REPO_ROOT / "docker-compose.infra.yml"
 BLUEGREEN_APP_COMPOSE_FILE = REPO_ROOT / "docker-compose.app.yml"
 BLUEGREEN_EDGE_COMPOSE_FILE = REPO_ROOT / "docker-compose.edge.yml"
 ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
@@ -166,10 +163,6 @@ def _parse_env_assignments(path: Path) -> dict[str, str]:
     return assignments
 
 
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
 def _service_environment(compose: dict, service: str) -> dict[str, str]:
     """Parse a service's ``environment:`` list of ``KEY=value`` strings."""
     entries = compose["services"][service]["environment"]
@@ -225,7 +218,7 @@ def _names_mentioned_outside_compose(candidates: set[str]) -> set[str]:
 
 
 def test_docker_compose_applies_operational_defaults_to_all_services() -> None:
-    compose = _load_yaml(COMPOSE_FILE)
+    compose = load_yaml(COMPOSE_FILE)
     services = compose["services"]
 
     missing_services = sorted(set(COMPOSE_SERVICE_LIMITS) - set(services))
@@ -261,7 +254,7 @@ def test_nginx_blocks_public_api_metrics_proxy() -> None:
 
 
 def test_docker_compose_declares_ui_and_prometheus_healthchecks() -> None:
-    services = _load_yaml(COMPOSE_FILE)["services"]
+    services = load_yaml(COMPOSE_FILE)["services"]
 
     ui_healthcheck = services["unibridge-ui"].get("healthcheck", {})
     prometheus_healthcheck = services["prometheus"].get("healthcheck", {})
@@ -280,8 +273,8 @@ def test_bluegreen_ui_and_edge_healthchecks_use_ipv4_loopback() -> None:
         "CMD-SHELL",
         "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'",
     ]
-    app_services = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
-    edge_services = _load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"]
+    app_services = load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
+    edge_services = load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"]
 
     assert app_services["unibridge-ui"]["healthcheck"]["test"] == expected
     assert edge_services["edge"]["healthcheck"]["test"] == expected
@@ -298,9 +291,9 @@ def test_ui_docker_context_excludes_host_build_artifacts() -> None:
 
 
 def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
-    infra_services = set(_load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"])
-    app_services = set(_load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"])
-    edge_services = set(_load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"])
+    infra_services = set(load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"])
+    app_services = set(load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"])
+    edge_services = set(load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"])
 
     assert {
         "etcd",
@@ -316,7 +309,7 @@ def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
 
 
 def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion() -> None:
-    app_compose = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
+    app_compose = load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
     app_services = app_compose["services"]
     service_env = app_services["unibridge-service"]["environment"]
     ui_env = app_services["unibridge-ui"]["environment"]
@@ -357,8 +350,8 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
 
 
 def test_bluegreen_app_env_matches_single_stack() -> None:
-    single_stack = _load_yaml(COMPOSE_FILE)
-    bluegreen_app = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
+    single_stack = load_yaml(COMPOSE_FILE)
+    bluegreen_app = load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
 
     for service in BLUEGREEN_SHARED_ENV_SERVICES:
         expected = _service_environment(single_stack, service)
@@ -437,7 +430,7 @@ def test_readme_states_compose_v2_required_for_resource_limits() -> None:
 
 
 def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
-    config = _load_yaml(PROMETHEUS_CONFIG_FILE)
+    config = load_yaml(PROMETHEUS_CONFIG_FILE)
     scrape_jobs = {
         job["job_name"]: job
         for job in config.get("scrape_configs", [])
@@ -459,7 +452,7 @@ def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
 
 def test_prometheus_alert_rules_cover_gateway_service_database_and_audit() -> None:
     rule_files = sorted(PROMETHEUS_RULES_DIR.glob("*.yml"))
-    loaded_rule_files = [_load_yaml(path) for path in rule_files]
+    loaded_rule_files = [load_yaml(path) for path in rule_files]
     alerts = {
         rule["alert"]: rule
         for rule_file in loaded_rule_files
@@ -688,7 +681,7 @@ def test_bifrost_ui_certificate_falls_back_to_the_unibridge_pair() -> None:
         (COMPOSE_FILE, "unibridge-ui"),
         (BLUEGREEN_APP_COMPOSE_FILE, "unibridge-ui"),
     ):
-        volumes = _load_yaml(path)["services"][service]["volumes"]
+        volumes = load_yaml(path)["services"][service]["volumes"]
         assert cert in volumes and key in volumes, path.name
         assert "${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro" in volumes, path.name
         assert "${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro" in volumes, path.name
@@ -1364,8 +1357,8 @@ BIFROST_INFERENCE_PATHS = {
 
 
 def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> None:
-    single = _load_yaml(COMPOSE_FILE)
-    infra = _load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)
+    single = load_yaml(COMPOSE_FILE)
+    infra = load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)
 
     for compose in (single, infra):
         services = compose["services"]
@@ -1412,7 +1405,7 @@ def test_bifrost_image_includes_the_management_auth_bypass_fix() -> None:
     # and the BIFROST_UI_HOSTNAME server both forward /api, so an older tag
     # (say, from the June 2026 v1.5 branch) must not come back.
     for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
-        image = _load_yaml(compose_file)["services"]["bifrost"]["image"]
+        image = load_yaml(compose_file)["services"]["bifrost"]["image"]
         repo, _, tag = image.partition(":")
         assert repo == "maximhq/bifrost", image
         release = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
@@ -1442,7 +1435,7 @@ def _nginx_location_for(path: str, locations: list[tuple[str, str]]) -> str:
 
 
 def test_bifrost_tls_proxy_forwards_only_the_ui_and_management_api() -> None:
-    service = _load_yaml(COMPOSE_FILE)["services"]["bifrost-tls"]
+    service = load_yaml(COMPOSE_FILE)["services"]["bifrost-tls"]
     assert "./bifrost/tls-proxy.conf:/etc/nginx/conf.d/default.conf:ro" in service["volumes"]
 
     conf = (BIFROST_DIR / "tls-proxy.conf").read_text(encoding="utf-8")
@@ -1492,7 +1485,7 @@ def test_ui_bifrost_link_targets_the_published_tls_port() -> None:
     # The LLM Monitoring page's Bifrost button is https://HOST_IP:BIFROST_UI_PORT;
     # a default that differs from bifrost-tls's published port is a dead link.
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        env = _service_environment(_load_yaml(path), "unibridge-ui")
+        env = _service_environment(load_yaml(path), "unibridge-ui")
         assert env["BIFROST_UI_PORT"] == "${BIFROST_UI_PORT:-18443}", path.name
     entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
     assert 'BIFROST_ADMIN_URL="https://${HOST_IP:-localhost}:${BIFROST_UI_PORT:-18443}"' in entrypoint
@@ -1582,7 +1575,7 @@ def test_ui_renders_the_bifrost_server_only_when_a_hostname_is_set() -> None:
     assert 'BIFROST_UI_HOSTNAME: "$(json_escape "$BIFROST_UI_HOSTNAME")"' in entrypoint
 
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        compose = _load_yaml(path)
+        compose = load_yaml(path)
         env = _service_environment(compose, "unibridge-ui")
         assert env["BIFROST_UI_HOSTNAME"] == "${BIFROST_UI_HOSTNAME:-}", path.name
         # The service's sign-in handoff (app/routers/bifrost_sso.py) needs the
@@ -2042,7 +2035,7 @@ def test_bifrost_config_authenticates_admin_api_and_inference_and_boots_offline(
         json.loads((BIFROST_DIR / filename).read_text(encoding="utf-8"))
     assert pricing["mcp_library_sync_interval"] == 0
 
-    service = _load_yaml(COMPOSE_FILE)["services"]["bifrost"]
+    service = load_yaml(COMPOSE_FILE)["services"]["bifrost"]
     assert "./bifrost/config.json:/app/data/config.json:ro" in service["volumes"]
     assert "./bifrost:/app/bundle:ro" in service["volumes"]
     assert service["entrypoint"] == ["/bin/sh", "/app/bundle/entrypoint.sh"]
@@ -2092,7 +2085,7 @@ def test_bifrost_entrypoint_fails_closed_without_secrets() -> None:
 
 def test_service_gets_the_bifrost_virtual_key() -> None:
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        env = _service_environment(_load_yaml(path), "unibridge-service")
+        env = _service_environment(load_yaml(path), "unibridge-service")
         # Optional: without a usable key the service leaves /api/llm as it is
         # and logs why.
         assert env["BIFROST_TEST_VK"] == "${BIFROST_TEST_VK:-}", path.name
@@ -2238,7 +2231,7 @@ def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(
 
 
 def test_deploy_and_bifrost_take_the_same_virtual_keys_as_the_service() -> None:
-    from tests.test_llm_routes import VIRTUAL_KEY_CASES
+    from tests.helpers import VIRTUAL_KEY_CASES
 
     for value, usable in VIRTUAL_KEY_CASES:
         # A UTF-8 locale must not widen the script's A-Z ranges.
@@ -2426,7 +2419,7 @@ def test_deploy_refuses_an_unusable_virtual_key_before_anything() -> None:
 
 
 def test_single_stack_converter_waits_for_bifrost() -> None:
-    services = _load_yaml(COMPOSE_FILE)["services"]
+    services = load_yaml(COMPOSE_FILE)["services"]
     # Healthy, so it does not come up before that name resolves (#95); optional,
     # so a broken Bifrost does not hold up the rest of the stack.
     assert services["llm-converter"]["depends_on"] == {
@@ -2593,14 +2586,14 @@ def test_backup_and_restore_cover_the_bifrost_config_store() -> None:
     assert 'BIFROST_MOUNT="/app/data"' in lib
     assert 'BIFROST_CONFIG_DB="config.db"' in lib
     for path in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
-        services = _load_yaml(path)["services"]
+        services = load_yaml(path)["services"]
         assert "bifrost-test-data:/app/data" in services["bifrost"]["volumes"], path.name
     # The python3 comes from the app tier's llm-converter container, which both
     # app layouts build from the converter's Python image.
     assert 'BIFROST_BACKUP_IMAGE="${BIFROST_BACKUP_IMAGE:-}"' in lib
     assert "app_compose ps -aq llm-converter" in lib
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        assert _load_yaml(path)["services"]["llm-converter"]["build"]["context"] == "./llm-converter", path.name
+        assert load_yaml(path)["services"]["llm-converter"]["build"]["context"] == "./llm-converter", path.name
 
 
 def _bifrost_store(path: Path, providers: list[str]) -> None:
@@ -2893,7 +2886,7 @@ def test_alert_rules_read_unibridge_metrics_through_the_colors_gate() -> None:
     # The shape of app/routers/query_metrics.py::_gated, held even where the
     # promtool test below is skipped: the condition once per job, the alias
     # job's copy behind the colors gate, never the two jobs summed.
-    rules = _load_yaml(PROMETHEUS_RULES_DIR / "unibridge-alerts.yml")
+    rules = load_yaml(PROMETHEUS_RULES_DIR / "unibridge-alerts.yml")
     gated = {
         rule.get("alert"): " ".join(rule["expr"].split())
         for group in rules["groups"]
@@ -2920,7 +2913,7 @@ def test_alert_rules_read_unibridge_metrics_through_the_colors_gate() -> None:
         assert UNIBRIDGE_COLORS_GATE in alias_side and expr.count(UNIBRIDGE_COLORS_GATE) == 1, alert
 
 
-PROMETHEUS_IMAGE = _load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"]["prometheus"]["image"]
+PROMETHEUS_IMAGE = load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"]["prometheus"]["image"]
 
 
 @pytest.mark.skipif(

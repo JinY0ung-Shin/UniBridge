@@ -27,7 +27,7 @@ def _validate_resource_type(resource: str) -> None:
 
 def _validate_resource_id(resource_id: str) -> None:
     """Validate resource ID to prevent path traversal."""
-    if not _SAFE_ID_RE.match(resource_id):
+    if not _SAFE_ID_RE.fullmatch(resource_id):
         raise ValueError(f"Invalid resource ID: {resource_id!r}")
 
 

@@ -10,28 +10,17 @@ rule PUT fail with "unknown plugin".
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
 from app.services.node_path_prefix import PLUGIN_NAME
+from tests.helpers import BLUEGREEN_INFRA_COMPOSE_FILE, COMPOSE_FILE, REPO_ROOT, load_yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_FILE = REPO_ROOT / "apisix" / "plugins" / f"{PLUGIN_NAME}.lua"
 APISIX_CONFIG_FILE = REPO_ROOT / "apisix" / "config.yaml"
-APISIX_COMPOSE_FILES = (
-    REPO_ROOT / "docker-compose.yml",
-    REPO_ROOT / "docker-compose.infra.yml",
-)
+APISIX_COMPOSE_FILES = (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE)
 PLUGIN_MOUNT = (
     f"./apisix/plugins/{PLUGIN_NAME}.lua"
     f":/usr/local/apisix/apisix/plugins/{PLUGIN_NAME}.lua:ro"
 )
-
-
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def test_plugin_file_declares_the_name_the_backend_uses() -> None:
@@ -40,12 +29,12 @@ def test_plugin_file_declares_the_name_the_backend_uses() -> None:
 
 
 def test_apisix_config_loads_the_plugin() -> None:
-    assert PLUGIN_NAME in _load_yaml(APISIX_CONFIG_FILE)["plugins"]
+    assert PLUGIN_NAME in load_yaml(APISIX_CONFIG_FILE)["plugins"]
 
 
 def test_every_apisix_compose_service_mounts_the_plugin() -> None:
     for compose_file in APISIX_COMPOSE_FILES:
-        volumes = _load_yaml(compose_file)["services"]["apisix"]["volumes"]
+        volumes = load_yaml(compose_file)["services"]["apisix"]["volumes"]
         assert PLUGIN_MOUNT in volumes, compose_file.name
 
 

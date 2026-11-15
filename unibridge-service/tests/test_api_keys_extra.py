@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
 from app.routers.api_keys import (
@@ -12,12 +11,7 @@ from app.routers.api_keys import (
     _sync_consumer_restriction,
 )
 from tests.conftest import auth_header
-
-
-def _http_status_error(status_code: int, body: str = "boom") -> httpx.HTTPStatusError:
-    request = httpx.Request("PUT", "http://apisix")
-    response = httpx.Response(status_code, request=request, text=body)
-    return httpx.HTTPStatusError("err", request=request, response=response)
+from tests.helpers import create_api_key_via_admin, http_status_error, mock_api_keys_apisix
 
 
 # ── Pure helper functions ───────────────────────────────────────────────────
@@ -45,8 +39,7 @@ async def test_sync_consumer_restriction_list_routes_failure():
     """list_resources failure should raise 502."""
     from fastapi import HTTPException
 
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.list_resources = AsyncMock(side_effect=RuntimeError("network"))
+    with mock_api_keys_apisix(list_resources=AsyncMock(side_effect=RuntimeError("network"))):
         with pytest.raises(HTTPException) as exc_info:
             await _sync_consumer_restriction(["r1"], "consumer-x")
     assert exc_info.value.status_code == 502
@@ -71,9 +64,10 @@ async def test_sync_consumer_restriction_skips_route_without_id_or_keyauth():
         captured.append((rt, rid, body))
         return {}
 
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
-        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+    with mock_api_keys_apisix(
+        list_resources=AsyncMock(side_effect=list_resources),
+        put_resource=AsyncMock(side_effect=put_resource),
+    ):
         await _sync_consumer_restriction(["ok"], "c1")
 
     # Only the 'ok' route was updated
@@ -110,9 +104,10 @@ async def test_sync_consumer_restriction_rollback_on_failure():
         state[rid] = body
         return {}
 
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
-        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+    with mock_api_keys_apisix(
+        list_resources=AsyncMock(side_effect=list_resources),
+        put_resource=AsyncMock(side_effect=put_resource),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             await _sync_consumer_restriction(["r1", "r2"], "c1")
     assert exc_info.value.status_code == 502
@@ -160,20 +155,8 @@ async def test_sync_consumer_restriction_rollback_failure_swallowed():
 ROUTE_FIXTURES = {"items": []}
 
 
-async def _create_key(client, admin_token, name="masked-app", api_key="key-12345678"):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": name})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("nope"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
-        await client.post(
-            "/admin/api-keys",
-            json={"name": name, "api_key": api_key},
-            headers=auth_header(admin_token),
-        )
-
-
 async def test_list_api_keys_includes_masked_key(client, admin_token):
-    await _create_key(client, admin_token, "li-app", "veryverysecret123")
+    await create_api_key_via_admin(client, admin_token, "li-app", api_key="veryverysecret123")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "li-app",
@@ -187,9 +170,8 @@ async def test_list_api_keys_includes_masked_key(client, admin_token):
 
 
 async def test_list_api_keys_handles_apisix_failure_gracefully(client, admin_token):
-    await _create_key(client, admin_token, "fail-app", "key-fail-789")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=RuntimeError("apisix down"))
+    await create_api_key_via_admin(client, admin_token, "fail-app", api_key="key-fail-789")
+    with mock_api_keys_apisix(get_resource=AsyncMock(side_effect=RuntimeError("apisix down"))):
         resp = await client.get("/admin/api-keys", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json()[0]["api_key"] is None
@@ -198,8 +180,9 @@ async def test_list_api_keys_handles_apisix_failure_gracefully(client, admin_tok
 # ── create_api_key error paths ──────────────────────────────────────────────
 
 async def test_create_api_key_apisix_http_status_error(client, admin_token):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(side_effect=_http_status_error(500, "explosion"))
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(side_effect=http_status_error(500, "explosion")),
+    ):
         resp = await client.post(
             "/admin/api-keys",
             json={"name": "fail-create", "api_key": "k1"},
@@ -210,8 +193,7 @@ async def test_create_api_key_apisix_http_status_error(client, admin_token):
 
 
 async def test_create_api_key_apisix_generic_error(client, admin_token):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(side_effect=RuntimeError("boom"))
+    with mock_api_keys_apisix(put_resource=AsyncMock(side_effect=RuntimeError("boom"))):
         resp = await client.post(
             "/admin/api-keys",
             json={"name": "fail-create2", "api_key": "k1"},
@@ -223,12 +205,11 @@ async def test_create_api_key_apisix_generic_error(client, admin_token):
 
 async def test_create_api_key_sync_failure_cleans_up_consumer(client, admin_token):
     """If consumer-restriction sync fails, the just-created consumer must be deleted."""
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "rollback-app"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "rollback-app"}),
+        list_resources=AsyncMock(side_effect=RuntimeError("apisix")),
+    ) as mock_apisix:
         # list_resources blows up → triggers HTTPException 502 from sync
-        mock_apisix.list_resources = AsyncMock(side_effect=RuntimeError("apisix"))
-        mock_apisix.delete_resource = AsyncMock()
 
         resp = await client.post(
             "/admin/api-keys",
@@ -276,11 +257,11 @@ async def test_update_api_key_fails_when_existing_consumer_unreadable(
     """If the existing consumer can't be read during a key/rate-limit update, the
     endpoint must fail 502 and NOT PUT the consumer (a lossy PUT would drop the
     plugins we couldn't read, e.g. wiping limit-count when rotating the key)."""
-    await _create_key(client, admin_token, "upd-misfetch", "k0")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("nope"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "upd-misfetch", api_key="k0")
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=Exception("nope")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
         resp = await client.put(
             "/admin/api-keys/upd-misfetch",
             json={"api_key": "newk"},
@@ -301,11 +282,11 @@ async def test_update_rate_limit_only_fails_when_consumer_unreadable(
     """A rate-limit-only update where the existing consumer can't be read must
     fail 502 and NOT PUT the consumer — otherwise the existing key-auth plugin
     would be dropped (consumer carrying only limit-count)."""
-    await _create_key(client, admin_token, "rl-misfetch", "k0")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=RuntimeError("apisix down"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "rl-misfetch", api_key="k0")
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=RuntimeError("apisix down")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
         resp = await client.put(
             "/admin/api-keys/rl-misfetch",
             json={"rate_limit_per_minute": 50},
@@ -321,7 +302,7 @@ async def test_update_rate_limit_only_fails_when_consumer_unreadable(
 
 
 async def test_update_api_key_put_consumer_failure(client, admin_token):
-    await _create_key(client, admin_token, "upd-putfail", "k0")
+    await create_api_key_via_admin(client, admin_token, "upd-putfail", api_key="k0")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "upd-putfail",
@@ -339,7 +320,7 @@ async def test_update_api_key_put_consumer_failure(client, admin_token):
 
 async def test_update_api_key_sync_failure_rolls_back_key(client, admin_token):
     """If consumer-restriction sync fails after key change, key change is rolled back."""
-    await _create_key(client, admin_token, "rb-app", "old-key")
+    await create_api_key_via_admin(client, admin_token, "rb-app", api_key="old-key")
 
     state = {"plugins": {"key-auth": {"key": "old-key"}}}
 
@@ -356,9 +337,10 @@ async def test_update_api_key_sync_failure_rolls_back_key(client, admin_token):
         # routes - blow up to fail sync
         raise RuntimeError("sync down")
 
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=get_resource)
-        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=get_resource),
+        put_resource=AsyncMock(side_effect=put_resource),
+    ) as mock_apisix:
         mock_apisix.list_resources = AsyncMock(return_value={
             "items": [
                 {"id": "r1", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}}},
@@ -379,7 +361,7 @@ async def test_update_api_key_sync_failure_rolls_back_key(client, admin_token):
 
 
 async def test_update_api_key_sync_failure_rollback_failure_logged(client, admin_token):
-    await _create_key(client, admin_token, "rblog-app", "old-key")
+    await create_api_key_via_admin(client, admin_token, "rblog-app", api_key="old-key")
 
     call_count = {"n": 0}
 
@@ -415,7 +397,7 @@ async def test_update_api_key_sync_failure_rollback_failure_logged(client, admin
 
 async def test_update_api_key_no_key_change_fetches_masked(client, admin_token):
     """When no api_key is sent, masked key should be fetched from APISIX."""
-    await _create_key(client, admin_token, "no-key-up", "abcdefghijk")
+    await create_api_key_via_admin(client, admin_token, "no-key-up", api_key="abcdefghijk")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "no-key-up",
@@ -434,10 +416,11 @@ async def test_update_api_key_no_key_change_fetches_masked(client, admin_token):
 
 async def test_update_api_key_no_key_change_get_fails(client, admin_token):
     """get_resource failing during display lookup is silently handled."""
-    await _create_key(client, admin_token, "no-key-up2", "abc1234567")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=RuntimeError("nope"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "no-key-up2", api_key="abc1234567")
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=RuntimeError("nope")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ):
         resp = await client.put(
             "/admin/api-keys/no-key-up2",
             json={"description": "x"},
@@ -459,10 +442,11 @@ async def test_delete_api_key_404(client, admin_token):
 
 async def test_delete_api_key_404_from_apisix_is_swallowed(client, admin_token):
     """APISIX returning 404 on delete is treated as already-deleted (success)."""
-    await _create_key(client, admin_token, "del-404", "k1")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.delete_resource = AsyncMock(side_effect=_http_status_error(404, "gone"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "del-404", api_key="k1")
+    with mock_api_keys_apisix(
+        delete_resource=AsyncMock(side_effect=http_status_error(404, "gone")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ):
         resp = await client.delete(
             "/admin/api-keys/del-404",
             headers=auth_header(admin_token),
@@ -471,10 +455,11 @@ async def test_delete_api_key_404_from_apisix_is_swallowed(client, admin_token):
 
 
 async def test_delete_api_key_apisix_500_propagates(client, admin_token):
-    await _create_key(client, admin_token, "del-500", "k1")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.delete_resource = AsyncMock(side_effect=_http_status_error(500, "boom"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "del-500", api_key="k1")
+    with mock_api_keys_apisix(
+        delete_resource=AsyncMock(side_effect=http_status_error(500, "boom")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ):
         resp = await client.delete(
             "/admin/api-keys/del-500",
             headers=auth_header(admin_token),
@@ -483,10 +468,11 @@ async def test_delete_api_key_apisix_500_propagates(client, admin_token):
 
 
 async def test_delete_api_key_generic_error(client, admin_token):
-    await _create_key(client, admin_token, "del-gen", "k1")
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.delete_resource = AsyncMock(side_effect=RuntimeError("oh no"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    await create_api_key_via_admin(client, admin_token, "del-gen", api_key="k1")
+    with mock_api_keys_apisix(
+        delete_resource=AsyncMock(side_effect=RuntimeError("oh no")),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ):
         resp = await client.delete(
             "/admin/api-keys/del-gen",
             headers=auth_header(admin_token),
@@ -496,9 +482,10 @@ async def test_delete_api_key_generic_error(client, admin_token):
 
 async def test_delete_api_key_with_old_routes_triggers_unwhitelist(client, admin_token):
     """Deleting a key that had allowed_routes should clear it from those routes' whitelist."""
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "wl-app"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("nope"))
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "wl-app"}),
+        get_resource=AsyncMock(side_effect=Exception("nope")),
+    ) as mock_apisix:
         mock_apisix.list_resources = AsyncMock(return_value={
             "items": [
                 {"id": "r1", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}}},
@@ -522,10 +509,10 @@ async def test_delete_api_key_with_old_routes_triggers_unwhitelist(client, admin
             routes_state[rid] = {"id": rid, **body}
         return {}
 
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
-        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
-        mock_apisix.delete_resource = AsyncMock()
+    with mock_api_keys_apisix(
+        list_resources=AsyncMock(side_effect=list_resources),
+        put_resource=AsyncMock(side_effect=put_resource),
+    ):
         resp = await client.delete(
             "/admin/api-keys/wl-app",
             headers=auth_header(admin_token),

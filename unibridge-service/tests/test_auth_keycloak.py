@@ -10,11 +10,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from jwt.algorithms import RSAAlgorithm
-from pytest_httpx import HTTPXMock
 
 import app.auth as auth
 from app.auth import _verify_keycloak_token, get_current_user
 from app.config import settings
+from tests.http_mock import HTTPMock
 
 
 ISSUER = "https://keycloak.example.test/realms/unibridge"
@@ -93,11 +93,11 @@ def _credentials(token: str):
 
 
 async def test_rs256_token_with_matching_kid_is_accepted(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     user = await _verify_keycloak_token(make_token(kid="kid-1", roles=["user", "admin"]))
 
@@ -107,26 +107,26 @@ async def test_rs256_token_with_matching_kid_is_accepted(
 
 
 async def test_missing_kid_forces_jwks_refresh_and_accepts_rotated_key(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("old-kid")]})
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("new-kid")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("old-kid")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("new-kid")]})
 
     user = await _verify_keycloak_token(make_token(kid="new-kid"))
 
     assert user.username == "alice"
     assert user.role == "user"
-    assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
+    assert len(http_mock.get_requests(url=JWKS_URL)) == 2
 
 
 async def test_expired_keycloak_token_is_rejected(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     with pytest.raises(HTTPException) as exc_info:
         await _verify_keycloak_token(
@@ -145,13 +145,13 @@ async def test_expired_keycloak_token_is_rejected(
     ],
 )
 async def test_wrong_issuer_or_audience_is_rejected(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
     issuer,
     audience,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     with pytest.raises(HTTPException) as exc_info:
         await _verify_keycloak_token(
@@ -163,11 +163,11 @@ async def test_wrong_issuer_or_audience_is_rejected(
 
 
 async def test_hs256_token_is_rejected_in_keycloak_mode(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     with pytest.raises(HTTPException) as exc_info:
         await _verify_keycloak_token(make_token(kid="kid-1", algorithm="HS256"))
@@ -177,7 +177,7 @@ async def test_hs256_token_is_rejected_in_keycloak_mode(
 
 
 async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
 ):
     payload = {
@@ -189,7 +189,7 @@ async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
         "realm_access": {"roles": ["user"]},
     }
     token = jwt.encode(payload, key="", algorithm="none", headers={"kid": "kid-1"})
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     with pytest.raises(HTTPException) as exc_info:
         await _verify_keycloak_token(token)
@@ -199,31 +199,31 @@ async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
 
 
 async def test_jwks_fetch_failure_uses_stale_cache_once_available(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
     monkeypatch,
 ):
     monkeypatch.setattr(auth, "_JWKS_CACHE_TTL", 0.01)
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     first_user = await _verify_keycloak_token(make_token(kid="kid-1"))
     assert first_user.username == "alice"
 
     await asyncio.sleep(0.02)
-    httpx_mock.add_response(url=JWKS_URL, status_code=503)
+    http_mock.add_response(url=JWKS_URL, status_code=503)
 
     second_user = await _verify_keycloak_token(make_token(kid="kid-1"))
 
     assert second_user.username == "alice"
-    assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
+    assert len(http_mock.get_requests(url=JWKS_URL)) == 2
 
 
 async def test_jwks_fetch_failure_without_cache_returns_502(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, status_code=503)
+    http_mock.add_response(url=JWKS_URL, status_code=503)
 
     with pytest.raises(HTTPException) as exc_info:
         await _verify_keycloak_token(make_token(kid="kid-1"))
@@ -233,26 +233,26 @@ async def test_jwks_fetch_failure_without_cache_returns_502(
 
 
 async def test_concurrent_verification_fetches_jwks_once(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
     token = make_token(kid="kid-1")
 
     users = await asyncio.gather(*(_verify_keycloak_token(token) for _ in range(50)))
 
     assert {user.username for user in users} == {"alice"}
     assert {user.role for user in users} == {"user"}
-    assert len(httpx_mock.get_requests(url=JWKS_URL)) == 1
+    assert len(http_mock.get_requests(url=JWKS_URL)) == 1
 
 
 async def test_get_current_user_uses_keycloak_when_issuer_configured(
-    httpx_mock: HTTPXMock,
+    http_mock: HTTPMock,
     make_jwks_key,
     make_token,
 ):
-    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+    http_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     user = await get_current_user(credentials=_credentials(make_token(kid="kid-1")))
 

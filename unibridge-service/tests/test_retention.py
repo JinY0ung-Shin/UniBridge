@@ -8,18 +8,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import AdminAuditLog, AlertHistory, AuditLog, SystemConfig
 from app.services import retention
 from app.services.settings_manager import SettingsManager, settings_manager
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 SETTINGS_URL = "/admin/query/settings"
-
-
-def _session_factory(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def _seed_rows(engine, *, old_days: int = 100, recent_days: int = 1, count: int = 3):
@@ -27,7 +23,7 @@ async def _seed_rows(engine, *, old_days: int = 100, recent_days: int = 1, count
     now = datetime.now(timezone.utc)
     old = now - timedelta(days=old_days)
     recent = now - timedelta(days=recent_days)
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         for stamp in (old, recent):
             for i in range(count):
                 db.add(AuditLog(
@@ -45,7 +41,7 @@ async def _seed_rows(engine, *, old_days: int = 100, recent_days: int = 1, count
 
 
 async def _counts(engine) -> dict[str, int]:
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         return {
             "audit_logs": (await db.execute(select(func.count()).select_from(AuditLog))).scalar_one(),
             "admin_audit_logs": (await db.execute(select(func.count()).select_from(AdminAuditLog))).scalar_one(),
@@ -70,7 +66,7 @@ async def test_cleanup_removes_old_rows_and_keeps_recent(engine, retention_manag
     retention_manager.admin_audit_log_retention_days = 30
     retention_manager.alert_history_retention_days = 30
 
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         deleted = await retention.run_retention_cleanup()
 
     assert deleted == {"audit_logs": 3, "admin_audit_logs": 3, "alert_history": 3}
@@ -83,7 +79,7 @@ async def test_cleanup_is_disabled_at_zero(engine, retention_manager):
     await _seed_rows(engine)
     before = await _counts(engine)
 
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         assert await retention.run_retention_cleanup() == {}
 
     assert await _counts(engine) == before
@@ -93,7 +89,7 @@ async def test_each_table_honours_only_its_own_setting(engine, retention_manager
     await _seed_rows(engine)
     retention_manager.alert_history_retention_days = 30
 
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         deleted = await retention.run_retention_cleanup()
 
     assert deleted == {"alert_history": 3}
@@ -105,13 +101,13 @@ async def test_each_table_honours_only_its_own_setting(engine, retention_manager
 
 async def test_a_row_exactly_at_the_cutoff_is_kept(engine, retention_manager):
     now = datetime.now(timezone.utc)
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         db.add(AlertHistory(sent_at=now - timedelta(days=30), alert_type="triggered",
                             target="edge", message="m"))
         await db.commit()
     retention_manager.alert_history_retention_days = 30
 
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         # ``now`` is the same reference used to compute the cutoff, so the row
         # sits exactly on it and the strict ``<`` comparison spares it.
         assert await retention.run_retention_cleanup(now=now) == {}
@@ -121,13 +117,13 @@ async def test_a_row_exactly_at_the_cutoff_is_kept(engine, retention_manager):
 
 async def test_cleanup_deletes_in_batches(engine, retention_manager):
     old = datetime.now(timezone.utc) - timedelta(days=100)
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         for i in range(7):
             db.add(AlertHistory(sent_at=old, alert_type="triggered", target=f"t{i}", message="m"))
         await db.commit()
     retention_manager.alert_history_retention_days = 1
 
-    with patch("app.database.async_session", _session_factory(engine)), \
+    with patch("app.database.async_session", sessions(engine)), \
          patch.object(retention, "BATCH_SIZE", 3):
         assert await retention.run_retention_cleanup() == {"alert_history": 7}
 
@@ -136,13 +132,13 @@ async def test_cleanup_deletes_in_batches(engine, retention_manager):
 
 async def test_batch_ceiling_defers_the_rest_to_the_next_run(engine, retention_manager, caplog):
     old = datetime.now(timezone.utc) - timedelta(days=100)
-    async with _session_factory(engine)() as db:
+    async with sessions(engine)() as db:
         for i in range(6):
             db.add(AlertHistory(sent_at=old, alert_type="triggered", target=f"t{i}", message="m"))
         await db.commit()
     retention_manager.alert_history_retention_days = 1
 
-    with patch("app.database.async_session", _session_factory(engine)), \
+    with patch("app.database.async_session", sessions(engine)), \
          patch.object(retention, "BATCH_SIZE", 2), \
          patch.object(retention, "MAX_BATCHES_PER_RUN", 2):
         assert await retention.run_retention_cleanup() == {"alert_history": 4}
@@ -163,7 +159,7 @@ async def test_one_failing_table_does_not_stop_the_others(engine, retention_mana
             raise RuntimeError("table locked")
         return await real_delete(db, model, column, cutoff)
 
-    with patch("app.database.async_session", _session_factory(engine)), \
+    with patch("app.database.async_session", sessions(engine)), \
          patch.object(retention, "_delete_older_than", _fail_on_audit_logs):
         deleted = await retention.run_retention_cleanup()
 
@@ -176,7 +172,7 @@ async def test_cleanup_logs_a_single_summary_line(engine, retention_manager, cap
     await _seed_rows(engine)
     retention_manager.audit_log_retention_days = 30
 
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         await retention.run_retention_cleanup()
 
     summaries = [r for r in caplog.records if "Retention cleanup removed" in r.getMessage()]
@@ -187,7 +183,7 @@ async def test_cleanup_logs_a_single_summary_line(engine, retention_manager, cap
 async def test_cleanup_stays_quiet_when_nothing_was_deleted(engine, retention_manager, caplog):
     caplog.set_level(logging.INFO, logger="app.services.retention")
     retention_manager.audit_log_retention_days = 30
-    with patch("app.database.async_session", _session_factory(engine)):
+    with patch("app.database.async_session", sessions(engine)):
         assert await retention.run_retention_cleanup() == {}
     assert "Retention cleanup removed" not in caplog.text
 

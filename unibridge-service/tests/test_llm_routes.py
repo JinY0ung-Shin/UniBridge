@@ -17,13 +17,11 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
 from app.main import _provision_llm_routes
 from app.routers.gateway import (
     _SYSTEM_INJECTED_HEADERS,
-    _SYSTEM_ROUTE_URIS,
     _shadowed_system_uri,
 )
 from app.services import llm_routes
@@ -34,11 +32,12 @@ from app.services.apisix_system_resources import (
     PROTECTED_UPSTREAM_IDS,
     RETIRED_LITELLM_ROUTE_ID,
     RETIRED_LITELLM_UPSTREAM_ID,
+    SYSTEM_ROUTE_URIS,
 )
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER, IMPLIED_ROUTES
 from tests.conftest import auth_header
+from tests.helpers import BIFROST_VK, VIRTUAL_KEY_CASES, FakeApisix, http_status_error
 
-VK = "sk-bf-" + "v" * 32
 
 ON_BIFROST = [
     ("POST", "/api/llm/v1/chat/completions"),
@@ -56,7 +55,7 @@ def _paths(body: dict) -> list[str]:
     return body.get("uris") or [body["uri"]]
 
 
-def _on_bifrost(vk: str = VK) -> dict[str, dict]:
+def _on_bifrost(vk: str = BIFROST_VK) -> dict[str, dict]:
     bodies = {
         "llm-proxy": llm_routes.bifrost_proxy_route(vk),
         "llm-metrics": llm_routes.bifrost_metrics_route(),
@@ -68,12 +67,6 @@ def _on_bifrost(vk: str = VK) -> dict[str, dict]:
 
 def _headers(body: dict) -> dict:
     return body["plugins"]["proxy-rewrite"].get("headers", {})
-
-
-def _status_error(status_code: int, text: str = "") -> httpx.HTTPStatusError:
-    request = httpx.Request("DELETE", "http://apisix:9180/apisix/admin/x")
-    response = httpx.Response(status_code, text=text, request=request)
-    return httpx.HTTPStatusError(f"{status_code}", request=request, response=response)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +94,7 @@ def test_bifrost_exposes_only_the_served_paths() -> None:
     assert proxy["upstream_id"] == "bifrost"
     assert proxy["timeout"] == {"connect": 60, "send": 600, "read": 600}
     headers = _headers(proxy)
-    assert headers["set"]["x-bf-vk"] == VK
+    assert headers["set"]["x-bf-vk"] == BIFROST_VK
     assert headers["set"]["x-bf-dim-consumer"] == "$consumer_name"
     assert headers["set"]["x-bf-lh-consumer"] == "$consumer_name"
     # Non-OpenAI fields reach the backend on the raw proxy.
@@ -128,10 +121,10 @@ def test_bifrost_exposes_only_the_served_paths() -> None:
 
 
 def test_converter_routes_carry_the_virtual_key() -> None:
-    messages = llm_routes.converter_route("llm-messages", VK)
+    messages = llm_routes.converter_route("llm-messages", BIFROST_VK)
     headers = _headers(messages)
     assert headers["set"] == {
-        "x-bf-vk": VK,
+        "x-bf-vk": BIFROST_VK,
         "x-bf-dim-consumer": "$consumer_name",
         "x-bf-lh-consumer": "$consumer_name",
     }
@@ -142,7 +135,7 @@ def test_converter_routes_carry_the_virtual_key() -> None:
     assert messages["upstream_id"] == "llm-converter"
     assert messages["timeout"] == {"connect": 60, "send": 600, "read": 600}
 
-    models = llm_routes.converter_route("llm-models", VK)
+    models = llm_routes.converter_route("llm-models", BIFROST_VK)
     assert models["methods"] == ["GET"]
     assert "timeout" not in models
     assert _headers(models) == headers
@@ -176,28 +169,11 @@ def test_they_stay_system_routes_with_their_grants() -> None:
             assert name.lower() in _SYSTEM_INJECTED_HEADERS, name
         # A custom route cannot take any of the paths.
         for path in _paths(body):
-            assert _shadowed_system_uri(path, list(_SYSTEM_ROUTE_URIS)), path
+            assert _shadowed_system_uri(path, list(SYSTEM_ROUTE_URIS)), path
 
 
-# Shared with test_deployment_security.py, which holds the deploy script's rule to it.
-VIRTUAL_KEY_CASES = [
-    (VK, True),
-    ("sk-bf-" + "x" * 16, True),
-    ("sk-bf-Az09_-" + "x" * 10, True),
-    ("sk-bf-" + "x" * 15, False),
-    ("v" * 40, False),
-    ("SK-BF-" + "x" * 32, False),
-    ("", False),
-    # Bifrost would take these, but the deploy script finds the key in
-    # whitespace-stripped, JSON-escaped route bodies, where they never match.
-    ("sk-bf-" + "x" * 16 + " y", False),
-    ("sk-bf-" + "x" * 16 + '"y', False),
-    ("sk-bf-" + "x" * 16 + "\\y", False),
-    ("sk-bf-" + "x" * 16 + "+y", False),
-    ("sk-bf-" + "x" * 16 + "é", False),
-]
-
-
+# VIRTUAL_KEY_CASES (tests/helpers.py) also holds the deploy script's rule to it in
+# test_deployment_security.py.
 @pytest.mark.parametrize("value,usable", VIRTUAL_KEY_CASES)
 def test_usable_virtual_key_takes_only_url_safe_keys(value: str, usable: bool) -> None:
     assert llm_routes.usable_virtual_key(value) is usable
@@ -222,36 +198,8 @@ def test_litellm_ids_stay_protected() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FakeApisix:
-    """Admin API stand-in recording every write in order.
-
-    ``existing`` maps ``(resource, id)`` to what a GET returns; anything else is
-    a 404. ``put_errors`` makes one PUT raise instead.
-    """
-
-    def __init__(self, existing=None, put_errors=None):
-        self.existing = dict(existing or {})
-        self.put_errors = dict(put_errors or {})
-        self.writes: list[tuple[str, str, str]] = []
-        self.bodies: dict[tuple[str, str], dict] = {}
-
-    async def get_resource(self, resource, resource_id):
-        try:
-            return deepcopy(self.existing[(resource, resource_id)])
-        except KeyError:
-            raise _status_error(404) from None
-
-    async def put_resource(self, resource, resource_id, body):
-        self.writes.append(("PUT", resource, resource_id))
-        error = self.put_errors.get((resource, resource_id))
-        if error is not None:
-            raise error
-        self.bodies[(resource, resource_id)] = deepcopy(body)
-        return body
-
-
-def _patched(fake: _FakeApisix, **settings):
-    config = SimpleNamespace(**{"BIFROST_TEST_VK": VK, **settings})
+def _patched(fake: FakeApisix, **settings):
+    config = SimpleNamespace(**{"BIFROST_TEST_VK": BIFROST_VK, **settings})
     return (
         patch("app.main.settings", config),
         patch("app.services.apisix_client.get_resource", fake.get_resource),
@@ -259,7 +207,7 @@ def _patched(fake: _FakeApisix, **settings):
     )
 
 
-async def _provision(fake: _FakeApisix, **settings) -> None:
+async def _provision(fake: FakeApisix, **settings) -> None:
     config, get, put = _patched(fake, **settings)
     with config, get, put:
         await _provision_llm_routes()
@@ -270,7 +218,7 @@ def _converter_writes() -> list[tuple[str, str, str]]:
 
 
 async def test_provisioning_installs_the_exact_paths_then_the_404_route() -> None:
-    fake = _FakeApisix()
+    fake = FakeApisix()
 
     await _provision(fake)
 
@@ -296,7 +244,7 @@ async def test_reprovisioning_keeps_the_grants() -> None:
         route = {"id": route_id, "name": route_id, **deepcopy(body)}
         route["plugins"] = {**route.get("plugins", {}), "consumer-restriction": dict(granted)}
         existing[("routes", route_id)] = route
-    fake = _FakeApisix(existing)
+    fake = FakeApisix(existing)
 
     await _provision(fake)
 
@@ -307,7 +255,7 @@ async def test_reprovisioning_keeps_the_grants() -> None:
 
 @pytest.mark.parametrize("value", ["", "sk-bf-short", "not-a-key"])
 async def test_without_a_usable_key_leaves_everything_alone(value, caplog) -> None:
-    fake = _FakeApisix()
+    fake = FakeApisix()
 
     with caplog.at_level(logging.ERROR, logger="app.main"):
         await _provision(fake, BIFROST_TEST_VK=value)
@@ -317,7 +265,7 @@ async def test_without_a_usable_key_leaves_everything_alone(value, caplog) -> No
 
 
 async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None:
-    fake = _FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): _status_error(400, "bad")})
+    fake = FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): http_status_error(400, "bad")})
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
         await _provision(fake)
@@ -326,7 +274,7 @@ async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None
 
 
 async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
-    fake = _FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): _status_error(503)})
+    fake = FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): http_status_error(503)})
 
     with pytest.raises(Exception):
         await _provision(fake)
@@ -340,7 +288,7 @@ async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
 def _provisioned_responses_route() -> dict:
     return {
         "id": "llm-responses",
-        **llm_routes.converter_route("llm-responses", VK),
+        **llm_routes.converter_route("llm-responses", BIFROST_VK),
     }
 
 
@@ -380,7 +328,7 @@ async def test_service_key_edit_keeps_the_virtual_key_and_attribution(client, ad
     headers = mock_put.call_args[0][2]["plugins"]["proxy-rewrite"]["headers"]
     assert headers["set"] == {
         "X-Extra": "v",
-        "x-bf-vk": VK,
+        "x-bf-vk": BIFROST_VK,
         "x-bf-dim-consumer": "$consumer_name",
         "x-bf-lh-consumer": "$consumer_name",
     }
@@ -402,7 +350,7 @@ async def test_a_hand_set_bifrost_header_is_refused(client, admin_token, header)
 
 
 async def test_curl_sample_uses_the_first_path_of_a_multi_path_route(client, admin_token) -> None:
-    route = {"id": "llm-proxy", **llm_routes.bifrost_proxy_route(VK)}
+    route = {"id": "llm-proxy", **llm_routes.bifrost_proxy_route(BIFROST_VK)}
     with patch(
         "app.routers.gateway.apisix_client.get_resource",
         new_callable=AsyncMock,

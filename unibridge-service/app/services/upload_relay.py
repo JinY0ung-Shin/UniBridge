@@ -41,9 +41,10 @@ from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db_types import utcnow
+# iso_utc is also used as relay.iso_utc by routers/upload_relay.py.
+from app.db_types import iso_utc, utcnow
 from app.models import UploadRelayFile
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
 from app.services.audit import log_admin_action
 from app.services.meta_store import advisory_section, section_lock
 
@@ -322,10 +323,6 @@ def file_snapshot(row: Any) -> dict[str, object]:
     return snapshot
 
 
-def iso_utc(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 # ── Limits ──────────────────────────────────────────────────────────────────
 
 # pg_advisory_xact_lock key of the store-a-file critical section ("uprelay1").
@@ -433,11 +430,9 @@ async def run_purge_loop(
     the next pass picks the file up.
     """
     logger.info("Upload relay purge loop started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                await run_purge_once()
-        except Exception:
-            logger.exception("Upload relay purge pass failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        run_purge_once,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("Upload relay purge pass failed"),
+    )

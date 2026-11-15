@@ -11,29 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tests.conftest import auth_header
-
-
-async def _create_apikey(client, admin_token, *, name, key, allowed_routes, is_master=False):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={
-            "username": name,
-            "plugins": {"key-auth": {"key": key}},
-        })
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
-        resp = await client.post(
-            "/admin/api-keys",
-            json={
-                "name": name,
-                "api_key": key,
-                "is_master": is_master,
-                "allowed_databases": [],
-                "allowed_routes": allowed_routes,
-            },
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 201, resp.text
+from tests.helpers import create_api_key_via_admin
 
 
 @pytest.fixture(autouse=True)
@@ -47,8 +25,8 @@ def _patch_routes_listing():
 
 
 async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="usage-app", key="usage-key", allowed_routes=["usages-api"]
+    await create_api_key_via_admin(
+        client, admin_token, name="usage-app", api_key="usage-key", allowed_routes=["usages-api"]
     )
     results = [{"metric": {"route": "query-api"}, "value": [0, "42"]}]
     mock = AsyncMock(return_value=results)
@@ -72,8 +50,8 @@ async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
 
 
 async def test_apikey_caller_llm_routes_hidden(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="usage-app2", key="usage-key2", allowed_routes=["usages-api"]
+    await create_api_key_via_admin(
+        client, admin_token, name="usage-app2", api_key="usage-key2", allowed_routes=["usages-api"]
     )
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
@@ -93,8 +71,8 @@ async def test_apikey_caller_llm_routes_hidden(client, admin_token):
 
 
 async def test_master_key_sees_all_consumers_combined(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="master-app", key="master-key",
+    await create_api_key_via_admin(
+        client, admin_token, name="master-app", api_key="master-key",
         allowed_routes=[], is_master=True,
     )
     results = [
@@ -116,8 +94,8 @@ async def test_master_key_sees_all_consumers_combined(client, admin_token):
 
 
 async def test_master_key_can_filter_specific_consumer_and_include_llm(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="master-app2", key="master-key2",
+    await create_api_key_via_admin(
+        client, admin_token, name="master-app2", api_key="master-key2",
         allowed_routes=[], is_master=True,
     )
     mock = AsyncMock(return_value=[])
@@ -142,8 +120,8 @@ async def test_unknown_consumer_rejected(client):
 
 
 async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="lat-app", key="lat-key", allowed_routes=["usages-api"]
+    await create_api_key_via_admin(
+        client, admin_token, name="lat-app", api_key="lat-key", allowed_routes=["usages-api"]
     )
 
     async def fake(query, eval_time=None):
@@ -175,8 +153,8 @@ async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token)
 
 
 async def test_apikey_caller_future_date_empty(client, admin_token):
-    await _create_apikey(
-        client, admin_token, name="fut-app", key="fut-key", allowed_routes=["usages-api"]
+    await create_api_key_via_admin(
+        client, admin_token, name="fut-app", api_key="fut-key", allowed_routes=["usages-api"]
     )
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):

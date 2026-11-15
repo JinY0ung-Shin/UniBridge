@@ -4,7 +4,6 @@ from __future__ import annotations
 import socket
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import ALL_PERMISSIONS
 from app.models import AlertChannel, AlertHistory, AlertSettings, ResourceOwner
@@ -17,6 +16,7 @@ from app.schemas import (
 )
 from app.services.alert_state import AlertStateManager
 from app.services.webhook_security import mask_webhook_url
+from tests.helpers import sessions
 
 
 class TestAlertModels:
@@ -347,7 +347,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         mgr = AlertStateManager()
         mgr.update("db_health", "live-db", is_healthy=False, trigger_after_failures=1)
         mgr.update("db_health", "ghost-db", is_healthy=False, trigger_after_failures=1)
@@ -403,7 +403,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         mgr = AlertStateManager()
         mgr.update("upstream_health", "any-up", is_healthy=False, trigger_after_failures=1)
         mgr.update("route_error_rate", "any-route", is_healthy=False, trigger_after_failures=1)
@@ -431,7 +431,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         mgr = AlertStateManager()
         signals = [
             ("server_down", "live-host"),
@@ -473,7 +473,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         mgr = AlertStateManager()
         mgr.update("db_health", "doomed-db", is_healthy=False, trigger_after_failures=1)
         async with session_factory() as db:
@@ -495,7 +495,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         mgr = AlertStateManager()
         mgr.update("db_health", "main-db", is_healthy=False, trigger_after_failures=2)
         mgr.update("db_health", "main-db", is_healthy=False, trigger_after_failures=2)
@@ -523,7 +523,7 @@ class TestAlertState:
             save_alert_state_to_db,
         )
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(seeded_db)
         damped = {"trigger_after_failures": 1, "resolve_after_successes": 3}
         mgr = AlertStateManager()
         mgr.update("db_health", "main-db", is_healthy=False, **damped)

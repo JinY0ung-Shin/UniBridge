@@ -47,6 +47,7 @@ router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
 
 # Assignable resources (ASSIGNEE_RESOURCE_TYPES) registered in the meta DB:
 # type → the column holding a resource's id, which is also its display name.
+# The boot stale-state purge reads what still exists from it too (main.py).
 # The rest live in APISIX (APISIX_RESOURCE_TYPES: type → APISIX resource).
 RESOURCE_ID_COLUMNS = {
     "db": DBConnection.alias,

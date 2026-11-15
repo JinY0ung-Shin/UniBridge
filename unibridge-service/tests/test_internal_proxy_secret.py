@@ -10,19 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
 
 from app.main import (
     APISIX_INTERNAL_PROXY_HEADER,
     INTERNAL_PROXY_ROUTE_IDS,
-    lifespan,
 )
-from tests.test_main import _DummyTask, _fake_session, _keyed_get_resource
+from tests.helpers import keyed_get_resource, put_bodies, run_lifespan
 
 
 # ── validate_settings ──────────────────────────────────────────────────────
@@ -73,38 +70,6 @@ def test_validate_settings_silent_when_internal_proxy_secret_is_dedicated(
 # ── Boot header reconcile ──────────────────────────────────────────────────
 
 
-def _lifespan_patches(settings_ns, get_resource, put_resource, sleep=None):
-    """Patches that let ``lifespan`` run with no real APISIX, DB, or network."""
-    patches = [
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.async_session", _fake_session),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", settings_ns),
-        patch("app.services.apisix_client.get_resource", get_resource),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.apisix_client.list_resources",
-            new=AsyncMock(return_value={"items": []}),
-        ),
-        patch(
-            "app.main.api_keys.sync_all_consumer_route_restrictions", new=AsyncMock()
-        ),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ]
-    if sleep is not None:
-        patches.append(patch("asyncio.sleep", sleep))
-    return patches
-
-
 def _steady_state_settings(secret: str) -> SimpleNamespace:
     """A promoted blue/green color: provisioning off, secret configured."""
     return SimpleNamespace(
@@ -138,27 +103,20 @@ def _system_route(route_id: str, header_value: str | None) -> dict:
     }
 
 
-def _route_puts(put_resource: AsyncMock) -> dict[str, dict]:
-    return {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }
-
-
 async def _run_lifespan(settings_ns, get_resource, put_resource, sleep=None) -> None:
-    app = FastAPI()
-    with ExitStack() as stack:
-        for p in _lifespan_patches(settings_ns, get_resource, put_resource, sleep):
-            stack.enter_context(p)
-        async with lifespan(app):
-            pass
+    await run_lifespan(
+        settings_ns,
+        get_resource=get_resource,
+        put_resource=put_resource,
+        replay=AsyncMock(),
+        extra_patches=[patch("asyncio.sleep", sleep)] if sleep is not None else (),
+    )
 
 
 async def test_boot_rewrites_stale_internal_proxy_header_without_provisioning():
     """The rotation path: old value in etcd, new value in env, provisioning off."""
     put_resource = AsyncMock()
-    get_resource = _keyed_get_resource(
+    get_resource = keyed_get_resource(
         {
             ("routes", route_id): _system_route(route_id, "old-secret")
             for route_id in INTERNAL_PROXY_ROUTE_IDS
@@ -169,7 +127,7 @@ async def test_boot_rewrites_stale_internal_proxy_header_without_provisioning():
         _steady_state_settings("new-secret"), get_resource, put_resource
     )
 
-    route_puts = _route_puts(put_resource)
+    route_puts = put_bodies(put_resource, "routes")
     assert sorted(route_puts) == sorted(INTERNAL_PROXY_ROUTE_IDS)
     for route_id, body in route_puts.items():
         proxy_rewrite = body["plugins"]["proxy-rewrite"]
@@ -192,7 +150,7 @@ async def test_boot_rewrites_stale_internal_proxy_header_without_provisioning():
 
 async def test_boot_leaves_matching_internal_proxy_header_untouched():
     put_resource = AsyncMock()
-    get_resource = _keyed_get_resource(
+    get_resource = keyed_get_resource(
         {
             ("routes", route_id): _system_route(route_id, "proxy-secret")
             for route_id in INTERNAL_PROXY_ROUTE_IDS
@@ -203,7 +161,7 @@ async def test_boot_leaves_matching_internal_proxy_header_untouched():
         _steady_state_settings("proxy-secret"), get_resource, put_resource
     )
 
-    assert _route_puts(put_resource) == {}
+    assert put_bodies(put_resource, "routes") == {}
     assert get_resource.await_count == len(INTERNAL_PROXY_ROUTE_IDS)
 
 
@@ -214,7 +172,7 @@ async def test_boot_adds_internal_proxy_header_to_route_that_lacks_it():
     so leaving it alone would keep the route permanently broken.
     """
     put_resource = AsyncMock()
-    get_resource = _keyed_get_resource(
+    get_resource = keyed_get_resource(
         {("routes", "s3-api"): _system_route("s3-api", None)}
     )
 
@@ -222,7 +180,7 @@ async def test_boot_adds_internal_proxy_header_to_route_that_lacks_it():
         _steady_state_settings("proxy-secret"), get_resource, put_resource
     )
 
-    route_puts = _route_puts(put_resource)
+    route_puts = put_bodies(put_resource, "routes")
     assert list(route_puts) == ["s3-api"]
     plugins = route_puts["s3-api"]["plugins"]
     assert plugins["proxy-rewrite"]["headers"]["set"] == {
@@ -233,13 +191,13 @@ async def test_boot_adds_internal_proxy_header_to_route_that_lacks_it():
 
 async def test_boot_skips_internal_proxy_routes_that_do_not_exist_yet():
     put_resource = AsyncMock()
-    get_resource = _keyed_get_resource({})
+    get_resource = keyed_get_resource({})
 
     await _run_lifespan(
         _steady_state_settings("proxy-secret"), get_resource, put_resource
     )
 
-    assert _route_puts(put_resource) == {}
+    assert put_bodies(put_resource, "routes") == {}
     # Every route was looked up — "no PUTs" here means "nothing to update", not
     # "the reconcile never ran".
     assert get_resource.await_count == len(INTERNAL_PROXY_ROUTE_IDS)
@@ -264,7 +222,7 @@ async def test_boot_fails_when_internal_proxy_reconcile_cannot_reach_apisix():
         ((2,),), ((4,),), ((8,),), ((15,),), ((15,),),
         ((15,),), ((15,),), ((15,),), ((15,),),
     ]
-    assert _route_puts(put_resource) == {}
+    assert put_bodies(put_resource, "routes") == {}
 
 
 async def test_internal_proxy_route_ids_match_the_provisioned_routes():
@@ -288,7 +246,7 @@ async def test_internal_proxy_route_ids_match_the_provisioned_routes():
 
     header_carrying = {
         route_id
-        for route_id, body in _route_puts(put_resource).items()
+        for route_id, body in put_bodies(put_resource, "routes").items()
         if APISIX_INTERNAL_PROXY_HEADER
         in body.get("plugins", {})
         .get("proxy-rewrite", {})
@@ -314,7 +272,7 @@ async def test_boot_on_the_standby_color_leaves_the_header_alone():
             _steady_state_settings("new-secret"), get_resource, put_resource
         )
 
-    assert _route_puts(put_resource) == {}
+    assert put_bodies(put_resource, "routes") == {}
 
 
 async def test_reconcile_loop_writes_only_while_active():

@@ -7,7 +7,6 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import QueryTemplate
 from app.services.openapi_export import (
@@ -16,6 +15,7 @@ from app.services.openapi_export import (
     extract_template_params,
 )
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 def _template(**overrides) -> SimpleNamespace:
@@ -361,10 +361,7 @@ MOCK_ROUTES = {
 
 class TestGatewayOpenapiEndpoint:
     async def test_returns_spec_with_routes_and_templates(self, client, admin_token, seeded_db):
-        session_factory = async_sessionmaker(
-            seeded_db, class_=AsyncSession, expire_on_commit=False
-        )
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             db.add(
                 QueryTemplate(
                     path="reports/users",

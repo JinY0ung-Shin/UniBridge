@@ -16,12 +16,16 @@ os.environ.update({
     "PROMETHEUS_URL": "http://localhost:19090",
 })
 
+from unittest.mock import AsyncMock, patch
+
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.auth import create_token, invalidate_permission_cache
 from app.models import Base, Role, RolePermission
+from tests.helpers import make_role_token, sessions
 
 
 # ── Database fixtures ──────────────────────────────────────────────────────
@@ -64,8 +68,7 @@ async def engine_sqlite():
 
 @pytest.fixture
 async def db_session(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as session:
+    async with sessions(engine)() as session:
         yield session
 
 
@@ -74,8 +77,7 @@ async def seeded_db(engine):
     """Engine with the system roles (admin/user) as the app seeds them."""
     from app.database import _seed_role_definitions
 
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(engine)() as db:
         for role_name, spec in _seed_role_definitions().items():
             role = Role(name=role_name, description=spec["description"], is_system=True)
             db.add(role)
@@ -87,6 +89,12 @@ async def seeded_db(engine):
     return engine
 
 
+@pytest.fixture
+def db_factory(seeded_db):
+    """A session factory over the seeded test database."""
+    return sessions(seeded_db)
+
+
 # ── App fixtures ───────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -95,7 +103,7 @@ async def app(seeded_db):
     from app.database import get_db
     from app.main import app as _app
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
 
     async def override_get_db():
         async with session_factory() as session:
@@ -138,16 +146,9 @@ async def querier_token(seeded_db):
     enforcement logic (SELECT-only grants, missing-grant 403, etc.) stays under
     test. The role is created directly in the seeded test engine.
     """
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        role = Role(name="querier", description="Test querier", is_system=False)
-        db.add(role)
-        await db.flush()
-        for perm in ("query.execute", "query.databases.read"):
-            db.add(RolePermission(role_id=role.id, permission=perm))
-        await db.commit()
-    await invalidate_permission_cache()
-    return create_token("testquerier", "querier")
+    return await make_role_token(
+        seeded_db, "querier", ("query.execute", "query.databases.read"), description="Test querier"
+    )
 
 
 @pytest.fixture
@@ -158,15 +159,9 @@ async def alerts_reader_token(seeded_db):
     can still create roles that do. Used to exercise reader-vs-writer behaviour
     (e.g. webhook/header masking for non-writers).
     """
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        role = Role(name="alertsreader", description="Test alerts reader", is_system=False)
-        db.add(role)
-        await db.flush()
-        db.add(RolePermission(role_id=role.id, permission="alerts.read"))
-        await db.commit()
-    await invalidate_permission_cache()
-    return create_token("testalertsreader", "alertsreader")
+    return await make_role_token(
+        seeded_db, "alertsreader", ("alerts.read",), description="Test alerts reader"
+    )
 
 
 def auth_header(token: str) -> dict[str, str]:
@@ -187,3 +182,73 @@ def fresh_module_copy(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# ── Shared stand-ins ───────────────────────────────────────────────────────
+
+USER_1_ID = "00000000-0000-4000-a000-000000000001"
+NEW_USER_ID = "00000000-0000-4000-a000-000000000002"
+
+
+@pytest.fixture
+def kc_mock():
+    """Patch ``app.routers.users._get_kc_admin`` to return an AsyncMock
+    KeycloakAdminClient: one user (alice, USER_1_ID) with the ``user`` realm
+    role, create_user → NEW_USER_ID, realm roles admin and user."""
+    import app.routers.users as users_mod
+
+    user = {
+        "id": USER_1_ID,
+        "username": "alice",
+        "email": "alice@example.com",
+        "enabled": True,
+        "createdTimestamp": 1700000000000,
+    }
+    kc = AsyncMock()
+    kc.list_users.return_value = ([dict(user)], 1)
+    kc.get_user.return_value = dict(user)
+    kc.get_user_realm_roles.return_value = [{"id": "role-id-user", "name": "user"}]
+    kc.create_user.return_value = NEW_USER_ID
+    kc.get_realm_roles.return_value = [
+        {"id": "role-id-admin", "name": "admin"},
+        {"id": "role-id-user", "name": "user"},
+    ]
+    # Reset the singleton so tests are isolated.
+    users_mod._kc_admin = None
+    with patch("app.routers.users._get_kc_admin", return_value=kc):
+        yield kc
+    users_mod._kc_admin = None
+
+
+@pytest.fixture
+def no_gateway(monkeypatch):
+    """Network-map usage discovery reads APISIX upstreams: an empty listing
+    instead of dialing a gateway (set its return_value/side_effect to feed it)."""
+    from app.services import network_map
+
+    upstreams = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr(network_map.apisix_client, "list_resources", upstreams)
+    network_map.clear_gateway_cache()
+    yield upstreams
+    network_map.clear_gateway_cache()
+
+
+@pytest.fixture
+async def gateway(app):
+    """APISIX for the tool calls MCP sends back out (tests.mcp_helpers.FakeGateway)."""
+    from tests.mcp_helpers import FakeGateway
+
+    fake = FakeGateway(app)
+    async with httpx.AsyncClient(transport=fake, base_url="http://apisix:9080") as client:
+        with patch("app.services.mcp_tools._gateway_client", return_value=client):
+            yield fake
+
+
+@pytest.fixture
+def http_mock():
+    """The app's outbound HTTP answered from registered responses (tests.http_mock):
+    a request nothing answers, or a response nothing used, fails the test."""
+    from tests.http_mock import mock_http
+
+    with mock_http() as mock:
+        yield mock

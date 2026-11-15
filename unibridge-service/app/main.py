@@ -16,13 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import metrics
 from app.config import settings, validate_settings
 from app.database import async_session, get_db, init_db
-from app.models import (
-    DBConnection,
-    MonitoredHost,
-    MonitoredService,
-    NASConnection,
-    S3Connection,
-)
+from app.models import DBConnection, NASConnection, S3Connection
 from app.routers import (
     admin,
     alerts,
@@ -525,14 +519,15 @@ async def _listed_ids(resource: str) -> set[str] | None:
     }
 
 
-# The resources alert state is kept for, by purge_stale_states keyword: what
-# still exists comes from these meta-DB columns.
-_PURGE_KNOWN_COLUMNS = (
-    ("known_db_aliases", DBConnection.alias),
-    ("known_nas_aliases", NASConnection.alias),
-    ("known_s3_aliases", S3Connection.alias),
-    ("known_host_names", MonitoredHost.name),
-    ("known_service_names", MonitoredService.name),
+# The purge_stale_states keyword of each resource type kept in the meta DB, in
+# the order they are read: what still exists comes from the type's id column
+# in alerts.RESOURCE_ID_COLUMNS.
+_PURGE_KEYWORDS = (
+    ("db", "known_db_aliases"),
+    ("nas", "known_nas_aliases"),
+    ("s3", "known_s3_aliases"),
+    ("server", "known_host_names"),
+    ("service", "known_service_names"),
 )
 
 # Background tasks on app.state, stopped in this order at shutdown, with what
@@ -682,8 +677,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # sets stay None when the API call fails, so a transient APISIX
         # outage does not wipe upstream/route alert state.
         known: dict[str, set[str]] = {}
-        for keyword, column in _PURGE_KNOWN_COLUMNS:
-            rows = await db.execute(select(column))
+        for resource_type, keyword in _PURGE_KEYWORDS:
+            rows = await db.execute(select(alerts.RESOURCE_ID_COLUMNS[resource_type]))
             known[keyword] = set(rows.scalars().all())
 
         await purge_stale_states(

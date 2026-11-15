@@ -1861,6 +1861,9 @@ _CONDITION_FIELDS = ("host", "hosts", "vars", "remote_addrs", "remote_addr", "fi
 
 
 def _route_paths(route: dict[str, Any]) -> list[str]:
+    # Not apisix_client.route_paths: that one joins uri and uris. This reads uri
+    # alone when it is set (as openapi_export does), so merging them would change
+    # which paths search_apis/call_api match.
     uri = route.get("uri")
     if isinstance(uri, str) and uri:
         return [uri]

@@ -43,17 +43,17 @@ import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db_types import utcnow
+from app.db_types import iso_utc, utcnow
 from app.models import McpArtifact
 from app.schemas import McpSettings
 from app.services import upload_relay
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
 from app.services.meta_store import advisory_section
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ class Artifact:
             "size": self.size,
             "sha256": self.sha256,
             "mime": self.content_type,
-            "expires_at": _iso_utc(self.expires_at),
+            "expires_at": iso_utc(self.expires_at),
             "download": {"method": "GET", "path": f"{PUBLIC_PATH}/{self.id}"},
         }
 
@@ -184,10 +184,6 @@ def _artifact(row: Any, *, expires_at: datetime | None = None) -> Artifact:
         sha256=row.sha256,
         expires_at=expires_at or row.expires_at,
     )
-
-
-def _iso_utc(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 # ── Names and types ─────────────────────────────────────────────────────────
@@ -425,15 +421,16 @@ async def run_purge_loop(
     """
     from app.database import async_session
 
+    async def purge_once() -> None:
+        async with async_session() as db:
+            removed = await purge_expired(db)
+        if removed:
+            logger.info("MCP artifacts: %d expired artifact(s) deleted", removed)
+
     logger.info("MCP artifact purge loop started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                async with async_session() as db:
-                    removed = await purge_expired(db)
-                if removed:
-                    logger.info("MCP artifacts: %d expired artifact(s) deleted", removed)
-        except Exception:
-            logger.exception("MCP artifact purge pass failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        purge_once,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("MCP artifact purge pass failed"),
+    )

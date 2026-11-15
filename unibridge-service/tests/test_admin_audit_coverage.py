@@ -15,13 +15,12 @@ fixture), so audit-row counts are asserted absolutely.
 from __future__ import annotations
 
 import json
-import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from app.services.audit import redact_snapshot
-from tests.conftest import auth_header
+from tests.conftest import NEW_USER_ID, USER_1_ID, auth_header
+from tests.helpers import audit_logs, cm_patch
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,32 +50,6 @@ NAS_PAYLOAD = {
     "max_download_bytes": 1048576,
 }
 
-USER_1_ID = "00000000-0000-4000-a000-000000000001"
-NEW_USER_ID = "00000000-0000-4000-a000-000000000002"
-
-
-async def _audit_logs(client, token, **params):
-    resp = await client.get(
-        "/admin/audit-logs", params=params, headers=auth_header(token)
-    )
-    assert resp.status_code == 200, resp.text
-    return resp.json()
-
-
-def _cm_patch(db_type: str = "postgres"):
-    """Patch the admin router's connection_manager singleton (same shape as
-    the mock used in test_admin.py)."""
-    mock_cm = MagicMock()
-    mock_cm.add_connection = AsyncMock()
-    mock_cm.remove_connection = AsyncMock()
-    mock_cm.get_status = MagicMock(return_value={"status": "registered"})
-    mock_cm.get_db_type = MagicMock(return_value=db_type)
-    mock_cm.get_engine = MagicMock(return_value=MagicMock())
-    mock_cm.get_clickhouse_lock = MagicMock(return_value=threading.Lock())
-    mock_cm.has_connection = MagicMock(return_value=True)
-    mock_cm.test_connection = AsyncMock(return_value=(True, "Connection successful"))
-    return patch("app.routers.admin.connection_manager", mock_cm)
-
 
 def _s3_patch():
     mgr = MagicMock()
@@ -92,30 +65,6 @@ def _nas_patch():
     mgr.remove_connection = AsyncMock()
     mgr.has_connection.return_value = True
     return patch("app.routers.nas.nas_manager", mgr)
-
-
-def _make_kc_mock() -> AsyncMock:
-    kc = AsyncMock()
-    kc.get_user.return_value = {
-        "id": USER_1_ID,
-        "username": "alice",
-        "email": "alice@example.com",
-        "enabled": True,
-        "createdTimestamp": 1700000000000,
-    }
-    kc.get_user_realm_roles.return_value = [{"id": "role-id-user", "name": "user"}]
-    kc.create_user.return_value = NEW_USER_ID
-    return kc
-
-
-@pytest.fixture
-def kc_mock():
-    import app.routers.users as users_mod
-    users_mod._kc_admin = None
-    mock = _make_kc_mock()
-    with patch("app.routers.users._get_kc_admin", return_value=mock):
-        yield mock
-    users_mod._kc_admin = None
 
 
 # ── redact_snapshot: headers.add gap ─────────────────────────────────────────
@@ -142,13 +91,13 @@ class TestRedactHeadersAdd:
 
 class TestDbConnectionAuditing:
     async def test_create_writes_masked_audit(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases", json=DB_PAYLOAD, headers=auth_header(admin_token)
             )
             assert resp.status_code == 201, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="db_connection")
+        logs = await audit_logs(client, admin_token, resource_type="db_connection")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["actor"] == "testadmin"
@@ -161,7 +110,7 @@ class TestDbConnectionAuditing:
         assert "super-secret-pw" not in entry["after"]
 
     async def test_update_records_before_and_masks_password(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases", json=DB_PAYLOAD, headers=auth_header(admin_token)
             )
@@ -172,7 +121,7 @@ class TestDbConnectionAuditing:
             )
             assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(
+        logs = await audit_logs(
             client, admin_token, resource_type="db_connection", action="update"
         )
         assert len(logs) == 1
@@ -184,7 +133,7 @@ class TestDbConnectionAuditing:
         assert "rotated-secret-pw" not in (logs[0]["before"] + logs[0]["after"])
 
     async def test_delete_writes_before_snapshot(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases", json=DB_PAYLOAD, headers=auth_header(admin_token)
             )
@@ -193,7 +142,7 @@ class TestDbConnectionAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(
+        logs = await audit_logs(
             client, admin_token, resource_type="db_connection", action="delete"
         )
         assert len(logs) == 1
@@ -209,7 +158,7 @@ class TestDbConnectionAuditing:
 class TestPermissionAuditing:
     async def test_upsert_create_then_update_then_delete(self, client, admin_token):
         body = {"role": "user", "db_alias": "auditdb", "allow_select": True}
-        with _cm_patch():
+        with cm_patch():
             resp = await client.put(
                 "/admin/query/permissions", json=body, headers=auth_header(admin_token)
             )
@@ -228,7 +177,7 @@ class TestPermissionAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="permission")
+        logs = await audit_logs(client, admin_token, resource_type="permission")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         created = logs[2]
         assert created["resource_id"] == str(perm_id)
@@ -254,7 +203,7 @@ class TestQueryTemplateAuditing:
         assert resp.status_code == 201, resp.text
 
     async def test_create_update_delete_write_audit(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await self._create_db(client, admin_token)
             resp = await client.post(
                 "/admin/query/templates",
@@ -280,7 +229,7 @@ class TestQueryTemplateAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="query_template")
+        logs = await audit_logs(client, admin_token, resource_type="query_template")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         assert all(e["resource_id"] == "reports/users" for e in logs)
         created = logs[2]
@@ -305,7 +254,7 @@ class TestS3ConnectionAuditing:
             )
             assert resp.status_code == 201, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="s3_connection")
+        logs = await audit_logs(client, admin_token, resource_type="s3_connection")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["action"] == "create"
@@ -332,7 +281,7 @@ class TestS3ConnectionAuditing:
             )
             assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="s3_connection")
+        logs = await audit_logs(client, admin_token, resource_type="s3_connection")
         created = json.loads(logs[1]["after"])
         assert created["allowed_buckets"] == ["my-bucket"]
         updated = logs[0]
@@ -355,7 +304,7 @@ class TestS3ConnectionAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="s3_connection")
+        logs = await audit_logs(client, admin_token, resource_type="s3_connection")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         updated = logs[1]
         assert json.loads(updated["before"])["region"] == "us-east-1"
@@ -387,7 +336,7 @@ class TestNasConnectionAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="nas_connection")
+        logs = await audit_logs(client, admin_token, resource_type="nas_connection")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         assert all(e["resource_id"] == "audit-nas" for e in logs)
         assert json.loads(logs[2]["after"])["base_path"] == "/mnt/share1"
@@ -408,7 +357,7 @@ class TestAlertSettingsAuditing:
         )
         assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="alert_settings")
+        logs = await audit_logs(client, admin_token, resource_type="alert_settings")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["action"] == "update"
@@ -434,7 +383,7 @@ class TestAlertChannelAuditing:
         assert resp.status_code == 201, resp.text
         channel_id = resp.json()["id"]
 
-        logs = await _audit_logs(client, admin_token, resource_type="alert_channel")
+        logs = await audit_logs(client, admin_token, resource_type="alert_channel")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["action"] == "create"
@@ -463,7 +412,7 @@ class TestAlertChannelAuditing:
         )
         assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="alert_channel")
+        logs = await audit_logs(client, admin_token, resource_type="alert_channel")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         updated = logs[1]
         assert json.loads(updated["before"])["name"] == "secret-ch"
@@ -478,7 +427,7 @@ class TestAlertChannelAuditing:
 
 class TestResourceOwnerAuditing:
     async def test_upsert_writes_audit(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases", json=DB_PAYLOAD, headers=auth_header(admin_token)
             )
@@ -490,7 +439,7 @@ class TestResourceOwnerAuditing:
         )
         assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="resource_owner")
+        logs = await audit_logs(client, admin_token, resource_type="resource_owner")
         assert [e["action"] for e in logs] == ["create"]
         assert logs[0]["resource_id"] == "db/auditdb"
         assert json.loads(logs[0]["after"])["emails"] == ["owner@example.com"]
@@ -519,7 +468,7 @@ class TestRoleAuditing:
         resp = await client.delete(f"/admin/roles/{role_id}", headers=auth_header(admin_token))
         assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="role")
+        logs = await audit_logs(client, admin_token, resource_type="role")
         assert [e["action"] for e in logs] == ["delete", "update", "create"]
         assert all(e["resource_id"] == str(role_id) for e in logs)
         assert all(e["summary"] == "auditor" for e in logs)
@@ -551,7 +500,7 @@ class TestUserAuditing:
         )
         assert resp.status_code == 201, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="user", action="create")
+        logs = await audit_logs(client, admin_token, resource_type="user", action="create")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["resource_id"] == NEW_USER_ID
@@ -573,7 +522,7 @@ class TestUserAuditing:
         )
         assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="user_role")
+        logs = await audit_logs(client, admin_token, resource_type="user_role")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["action"] == "update"
@@ -591,7 +540,7 @@ class TestUserAuditing:
         )
         assert resp.status_code == 204, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="user", action="update")
+        logs = await audit_logs(client, admin_token, resource_type="user", action="update")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["summary"] == "password reset"
@@ -607,7 +556,7 @@ class TestUserAuditing:
         )
         assert resp.status_code == 200, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="user", action="update")
+        logs = await audit_logs(client, admin_token, resource_type="user", action="update")
         assert len(logs) == 1
         assert json.loads(logs[0]["before"]) == {"enabled": True}
         assert json.loads(logs[0]["after"]) == {"enabled": False}
@@ -618,7 +567,7 @@ class TestUserAuditing:
         )
         assert resp.status_code == 204, resp.text
 
-        logs = await _audit_logs(client, admin_token, resource_type="user", action="delete")
+        logs = await audit_logs(client, admin_token, resource_type="user", action="delete")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["resource_id"] == USER_1_ID
@@ -632,7 +581,7 @@ class TestUserAuditing:
 class TestAuditFailureDoesNotBreakMutation:
     async def test_db_connection_create_survives_audit_failure(self, client, admin_token):
         with (
-            _cm_patch(),
+            cm_patch(),
             patch(
                 "app.services.audit.async_sessionmaker",
                 side_effect=RuntimeError("audit db down"),
@@ -644,7 +593,7 @@ class TestAuditFailureDoesNotBreakMutation:
             assert resp.status_code == 201, resp.text
 
         # The audit write failed and was swallowed, so no row was persisted.
-        assert await _audit_logs(client, admin_token, resource_type="db_connection") == []
+        assert await audit_logs(client, admin_token, resource_type="db_connection") == []
 
     async def test_alert_channel_create_survives_audit_failure(self, client, admin_token):
         with patch(
@@ -662,4 +611,4 @@ class TestAuditFailureDoesNotBreakMutation:
             )
             assert resp.status_code == 201, resp.text
 
-        assert await _audit_logs(client, admin_token, resource_type="alert_channel") == []
+        assert await audit_logs(client, admin_token, resource_type="alert_channel") == []

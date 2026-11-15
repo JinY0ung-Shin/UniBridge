@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import AlertChannel, AlertHistory, AlertSettings
 from app.services import alert_checker
@@ -20,6 +19,7 @@ from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager
 from app.services.server_monitor import HostSignal, ServiceSignal
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 PAYLOAD_TEMPLATE = '{"recipients":{{recipients_json}},"body":"{{message}}"}'
 RECIPIENT_TEMPLATE = '{"emailAddress":"{{email}}","recipientType":"TO"}'
@@ -164,7 +164,7 @@ async def test_external_service_signal_tags_its_rule(monkeypatch):
 
 
 async def test_history_row_records_rule_and_transition_separately(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = AlertChannel(
             name="mail",
@@ -197,7 +197,7 @@ async def test_history_row_records_rule_and_transition_separately(engine):
 
 async def test_rule_type_is_null_when_not_supplied(engine):
     """A caller that omits it still writes a row — the column is nullable."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         db.add(AlertSettings(id=1, mail_channel_id=None, admin_emails="[]"))
         await db.commit()
@@ -219,9 +219,8 @@ async def test_rule_type_is_null_when_not_supplied(engine):
 async def test_history_endpoint_returns_and_filters_by_rule_type(
     client, admin_token, seeded_db
 ):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     now = datetime.now(timezone.utc)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(AlertHistory(
             alert_type="triggered", rule_type="db_health", target="mydb",
             message="db down", sent_at=now,
@@ -262,8 +261,7 @@ async def test_history_endpoint_returns_and_filters_by_rule_type(
 async def test_history_endpoint_tolerates_rows_without_a_rule_type(
     client, admin_token, seeded_db
 ):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(AlertHistory(alert_type="triggered", target="legacy", message="old row"))
         await db.commit()
 

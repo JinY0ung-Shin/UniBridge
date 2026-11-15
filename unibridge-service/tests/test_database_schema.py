@@ -3,10 +3,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import inspect, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.database import set_sqlite_foreign_keys
 from app.models import Base, Permission, Role
+from tests.helpers import sessions
 
 
 async def test_sqlite_foreign_keys_are_enabled_for_meta_engine():
@@ -30,8 +31,7 @@ async def test_permission_role_fk_rejects_orphan_role():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(engine)() as db:
         db.add(Permission(role="missing", db_alias="testdb"))
         with pytest.raises(IntegrityError):
             await db.commit()
@@ -47,8 +47,7 @@ async def test_permission_role_fk_cascades_on_role_delete():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(engine)() as db:
         db.add(Role(name="temporary", description="Temporary"))
         await db.flush()
         db.add(Permission(role="temporary", db_alias="testdb"))
@@ -72,7 +71,7 @@ async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
     db_path = tmp_path / "meta.db"
     db_url = f"sqlite+aiosqlite:///{db_path}"
     engine = create_async_engine(db_url)
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
 
     with patch("app.database.engine", engine), patch("app.database.async_session", session_factory):
         await init_db()
@@ -164,7 +163,7 @@ async def test_init_db_seeds_alert_settings_for_in_memory_sqlite():
     from app.database import init_db
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
 
     with patch("app.database.engine", engine), patch("app.database.async_session", session_factory):
         await init_db()
@@ -188,7 +187,7 @@ async def test_init_db_leaves_a_database_migrated_by_a_newer_image_alone(tmp_pat
     from app.database import init_db
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'meta.db'}")
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     with patch("app.database.engine", engine), patch("app.database.async_session", session_factory):
         await init_db()
         async with engine.begin() as conn:

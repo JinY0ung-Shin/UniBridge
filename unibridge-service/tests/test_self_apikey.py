@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import httpx
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import CurrentUser, get_current_user
 from app.models import ApiKeyAccess
@@ -15,13 +13,7 @@ from app.routers.api_keys import (
     SELF_RATE_LIMIT,
     _self_consumer_name,
 )
-
-
-def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
-    """Build an httpx.HTTPStatusError with a response carrying the given code."""
-    request = httpx.Request("GET", "http://apisix/consumers/x")
-    response = httpx.Response(status_code, request=request, text="not found")
-    return httpx.HTTPStatusError("error", request=request, response=response)
+from tests.helpers import http_status_error, mock_api_keys_apisix, sessions
 
 
 def _override_user(app, sub: str, role: str = "user", username: str = "alice") -> None:
@@ -31,13 +23,6 @@ def _override_user(app, sub: str, role: str = "user", username: str = "alice") -
         return CurrentUser(username=username, role=role, sub=sub)
 
     app.dependency_overrides[get_current_user] = _fake_current_user
-
-
-def _patch_apisix():
-    """Stub APISIX client: put/get/delete are no-op async; list_resources
-    returns no routes so _sync_consumer_restriction is a no-op."""
-    mock = patch("app.routers.api_keys.apisix_client")
-    return mock
 
 
 def test_self_consumer_name_strips_dashes():
@@ -53,12 +38,7 @@ async def test_get_me_returns_null_when_no_key(app, client):
 
 async def test_post_me_creates_key(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         resp = await client.post("/admin/api-keys/me")
 
     assert resp.status_code == 201
@@ -74,12 +54,7 @@ async def test_post_me_creates_key(app, client):
 
 async def test_post_me_second_time_409(app, client):
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         first = await client.post("/admin/api-keys/me")
         assert first.status_code == 201
         second = await client.post("/admin/api-keys/me")
@@ -89,13 +64,10 @@ async def test_post_me_second_time_409(app, client):
 
 async def test_regenerate_changes_key(app, client):
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        # get_resource 404s → regenerate uses minimal limit-count fallback
-        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    # get_resource 404s → regenerate uses minimal limit-count fallback
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=http_status_error(404, "not found")),
+    ):
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
         original_key = create.json()["api_key"]
@@ -108,8 +80,9 @@ async def test_regenerate_changes_key(app, client):
     assert new_key != original_key
 
     # DB row still single (GET returns the same consumer, masked)
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=http_status_error(404, "not found")),
+    ):
         get = await client.get("/admin/api-keys/me")
     assert get.status_code == 200
     assert get.json()["name"] == _self_consumer_name("alice-sub-1")
@@ -119,16 +92,14 @@ async def test_regenerate_non_404_apisix_error_returns_502(app, client):
     """A transient (non-404) APISIX error while fetching the consumer must
     surface as 502 rather than silently resetting the consumer plugins."""
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not called on create"))
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=Exception("not called on create")),
+    ) as mock_apisix:
 
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
 
-        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(500))
+        mock_apisix.get_resource = AsyncMock(side_effect=http_status_error(500, "not found"))
         regen = await client.post("/admin/api-keys/me/regenerate")
 
     assert regen.status_code == 502
@@ -143,12 +114,7 @@ async def test_regenerate_non_404_apisix_error_returns_502(app, client):
 
 async def test_delete_me(app, client):
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
 
@@ -179,12 +145,10 @@ async def test_regenerate_preserves_other_plugins(app, client):
     create_my_api_key does not call get_resource, so a static get_resource
     return value only affects the regenerate path."""
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=Exception("not called on create")),
+    ) as mock_apisix:
         # create path: does not call get_resource
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not called on create"))
 
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
@@ -231,12 +195,10 @@ async def test_post_me_cleans_up_consumer_on_sync_failure(app, client):
     """If _sync_consumer_restriction raises, the created APISIX consumer must
     be deleted and no DB row should persist."""
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
+    with mock_api_keys_apisix(
+        list_resources=AsyncMock(side_effect=Exception("APISIX down")),
+    ) as mock_apisix:
         # list_resources fails → _sync_consumer_restriction raises HTTPException(502)
-        mock_apisix.list_resources = AsyncMock(side_effect=Exception("APISIX down"))
 
         resp = await client.post("/admin/api-keys/me")
         assert resp.status_code == 502
@@ -245,8 +207,7 @@ async def test_post_me_cleans_up_consumer_on_sync_failure(app, client):
         assert mock_apisix.delete_resource.await_args.args[1] == _self_consumer_name("alice-sub-1")
 
     # No DB row persisted
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+    with mock_api_keys_apisix():
         get = await client.get("/admin/api-keys/me")
     assert get.status_code == 200
     assert get.json() is None
@@ -258,12 +219,7 @@ async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     NOT be rejected by the allowed_databases guard."""
     sub = "alice-sub-1"
     _override_user(app, sub=sub)
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
         consumer_name = create.json()["name"]
@@ -304,10 +260,7 @@ async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
     # Pre-seed a row that already owns this consumer_name but for a different
     # owner. seeded_db is the same engine the app uses (shared fixture), so the
     # endpoint's INSERT will collide on the unique consumer_name.
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(
             ApiKeyAccess(
                 consumer_name=consumer_name,
@@ -321,12 +274,7 @@ async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
         await db.commit()
 
     _override_user(app, sub=sub, username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix() as mock_apisix:
         resp = await client.post("/admin/api-keys/me")
 
         assert resp.status_code == 409
@@ -344,11 +292,9 @@ async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
     DB row (so GET /me returns null) and attempt to delete the consumer."""
     _override_user(app, sub="alice-sub-1", username="alice")
     consumer_name = _self_consumer_name("alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(side_effect=Exception("APISIX down"))
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(side_effect=Exception("APISIX down")),
+    ) as mock_apisix:
 
         resp = await client.post("/admin/api-keys/me")
         assert resp.status_code >= 500
@@ -358,8 +304,7 @@ async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
         assert mock_apisix.delete_resource.await_args.args[1] == consumer_name
 
     # DB row rolled back → GET /me returns null.
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+    with mock_api_keys_apisix():
         get = await client.get("/admin/api-keys/me")
     assert get.status_code == 200
     assert get.json() is None
@@ -378,12 +323,7 @@ def _days_from_now(iso_value: str) -> float:
 
 async def test_post_me_sets_30_day_expiry(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         resp = await client.post("/admin/api-keys/me")
 
     assert resp.status_code == 201
@@ -400,20 +340,14 @@ async def test_regenerate_resets_expiry(app, client, seeded_db):
     from app.models import ApiKeyAccess
 
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=http_status_error(404, "not found")),
+    ):
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
 
         # Age the key so the reset is observable.
-        session_factory = async_sessionmaker(
-            seeded_db, class_=AsyncSession, expire_on_commit=False
-        )
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             await db.execute(
                 update(ApiKeyAccess)
                 .where(ApiKeyAccess.owner == "alice-sub-1")
@@ -435,19 +369,11 @@ async def test_renew_keeps_key_value_and_extends_expiry(app, client, seeded_db):
     from app.models import ApiKeyAccess
 
     _override_user(app, sub="alice-sub-1", username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix() as mock_apisix:
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
 
-        session_factory = async_sessionmaker(
-            seeded_db, class_=AsyncSession, expire_on_commit=False
-        )
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             await db.execute(
                 update(ApiKeyAccess)
                 .where(ApiKeyAccess.owner == "alice-sub-1")
@@ -489,21 +415,13 @@ async def test_renew_writes_admin_audit_log(app, client, seeded_db):
     from app.models import AdminAuditLog
 
     _override_user(app, sub="alice-sub-1", username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
         renew = await client.post("/admin/api-keys/me/renew")
         assert renew.status_code == 200
 
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(
             sa_select(AdminAuditLog).where(AdminAuditLog.resource_type == "api_key")
         )
@@ -523,20 +441,12 @@ async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
     from app.models import ApiKeyAccess
 
     _override_user(app, sub="alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         create = await client.post("/admin/api-keys/me")
         assert create.status_code == 201
         consumer_name = create.json()["name"]
 
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         await db.execute(
             update(ApiKeyAccess)
             .where(ApiKeyAccess.consumer_name == consumer_name)
@@ -560,10 +470,7 @@ async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
 async def _set_expiry(seeded_db, sub, when):
     from sqlalchemy import update
 
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         await db.execute(
             update(ApiKeyAccess).where(ApiKeyAccess.owner == sub).values(expires_at=when)
         )
@@ -573,10 +480,7 @@ async def _set_expiry(seeded_db, sub, when):
 async def _read_expiry(seeded_db, sub):
     from sqlalchemy import select as sa_select
 
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(
             sa_select(ApiKeyAccess).where(ApiKeyAccess.owner == sub)
         )
@@ -590,12 +494,7 @@ async def test_renew_readds_the_consumer_to_route_whitelists(app, client, seeded
 
     _override_user(app, sub="alice-sub-1", username="alice")
     consumer_name = _self_consumer_name("alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         assert (await client.post("/admin/api-keys/me")).status_code == 201
 
     await _set_expiry(
@@ -603,7 +502,7 @@ async def test_renew_readds_the_consumer_to_route_whitelists(app, client, seeded
     )
 
     # APISIX as the reconcile loop left it: the consumer is off every whitelist.
-    with _patch_apisix() as mock_apisix:
+    with mock_api_keys_apisix() as mock_apisix:
         mock_apisix.get_resource = AsyncMock(return_value={
             "plugins": {"key-auth": {"key": "the-same-key-value"}},
         })
@@ -647,20 +546,15 @@ async def test_renew_aborts_with_502_and_keeps_the_stored_expiry(app, client, se
     from datetime import datetime, timedelta, timezone
 
     _override_user(app, sub="alice-sub-1", username="alice")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         assert (await client.post("/admin/api-keys/me")).status_code == 201
 
     lapsed = datetime.now(timezone.utc) - timedelta(days=1)
     await _set_expiry(seeded_db, "alice-sub-1", lapsed)
 
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.put_resource = AsyncMock(side_effect=RuntimeError("apisix down"))
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(side_effect=RuntimeError("apisix down")),
+    ) as mock_apisix:
         mock_apisix.list_resources = AsyncMock(return_value={"items": [
             {
                 "id": "query-api", "uri": "/query/*",
@@ -684,21 +578,16 @@ async def test_regenerate_resyncs_the_route_whitelists(app, client, seeded_db):
 
     _override_user(app, sub="alice-sub-1", username="alice")
     consumer_name = _self_consumer_name("alice-sub-1")
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.delete_resource = AsyncMock()
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
+    with mock_api_keys_apisix():
         assert (await client.post("/admin/api-keys/me")).status_code == 201
 
     await _set_expiry(
         seeded_db, "alice-sub-1", datetime.now(timezone.utc) - timedelta(days=1)
     )
 
-    with _patch_apisix() as mock_apisix:
-        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
-        mock_apisix.put_resource = AsyncMock(return_value={})
+    with mock_api_keys_apisix(
+        get_resource=AsyncMock(side_effect=http_status_error(404, "not found")),
+    ) as mock_apisix:
         mock_apisix.list_resources = AsyncMock(return_value={"items": [
             {
                 "id": "query-api", "uri": "/query/*",

@@ -74,9 +74,11 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   (empty = dev HS256 mode).
 - **RBAC**: flat string permissions in `app/auth.py::ALL_PERMISSIONS`; roles→permissions with
   a 60s in-process cache (`invalidate_permission_cache()` after changes).
-- **APISIX consumer-restriction is preserved** on route updates for the fixed system routes
-  in `main.py::_preserve_consumer_restriction`'s id set (constants in
-  `app/services/apisix_system_resources.py`) — don't clobber it; a new fixed route joins that set.
+- **APISIX consumer-restriction is preserved** on route updates for the fixed routes in
+  `main.py::_GRANTED_ROUTE_IDS` (read by `_preserve_consumer_restriction`) — don't clobber it.
+  That set is derived: every route of the `ServiceRoute` table in
+  `app/services/apisix_system_resources.py` (`SERVICE_ROUTES`) plus the /api/llm ids that take
+  key grants, so a new fixed service route goes in that table and joins the set.
 - **Per-node path prefixes run on a custom APISIX plugin**
   (`apisix/plugins/unibridge-node-path-prefix.lua`, prefix in a node's `metadata.path_prefix`):
   listed in `apisix/config.yaml`, mounted by both compose files that run APISIX, switched on

@@ -4,28 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.auth import CurrentUser, create_token, get_current_user, invalidate_permission_cache
-from app.models import ApiKeyAccess, Role, RolePermission
+from app.auth import CurrentUser, create_token, get_current_user
+from app.models import ApiKeyAccess
 from tests.conftest import auth_header
+from tests.helpers import create_api_key_via_admin, make_role_token, sessions
 
 
 async def _create_key(client, token: str | None, name: str) -> dict:
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={})
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-        resp = await client.post(
-            "/admin/api-keys",
-            json={
-                "name": name,
-                "api_key": f"{name}-secret",
-                "allowed_databases": [],
-                "allowed_routes": [],
-            },
-            headers=auth_header(token) if token else {},
-        )
-    assert resp.status_code == 201, resp.text
+    resp = await create_api_key_via_admin(
+        client, token, name, api_key=f"{name}-secret", allowed_databases=[], allowed_routes=[]
+    )
     return resp.json()
 
 
@@ -72,8 +61,7 @@ async def test_admin_keys_are_matched_by_username_not_sub(app, client):
 
 
 async def test_mine_scope_includes_the_callers_own_self_service_key(app, client, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add_all([
             # Self-service keys issued before created_by existed carry only owner (the sub).
             ApiKeyAccess(consumer_name="self_alice", owner="alice-sub"),
@@ -154,15 +142,9 @@ async def test_usage_requires_apikeys_read(client, user_token):
 
 async def test_usage_also_requires_gateway_monitoring_read(client, seeded_db):
     # A role that may list keys but not see gateway traffic gets the list only.
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        role = Role(name="keyviewer", description="Test key viewer", is_system=False)
-        db.add(role)
-        await db.flush()
-        db.add(RolePermission(role_id=role.id, permission="apikeys.read"))
-        await db.commit()
-    await invalidate_permission_cache()
-    headers = auth_header(create_token("testkeyviewer", "keyviewer"))
+    headers = auth_header(
+        await make_role_token(seeded_db, "keyviewer", ("apikeys.read",), description="Test key viewer")
+    )
 
     mock = AsyncMock(return_value=[])
     with patch("app.routers.api_keys.prometheus_client.instant_query", mock):

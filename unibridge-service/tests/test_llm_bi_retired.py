@@ -16,10 +16,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI
 
-from app.main import _put_not_found_route, lifespan
-from app.routers.gateway import _SYSTEM_ROUTE_URIS, _shadowed_system_uri
+from app.main import _put_not_found_route
+from app.routers.gateway import _shadowed_system_uri
 from app.services import llm_routes
 from app.services.apisix_system_resources import (
     LLM_BI_NOT_FOUND_ROUTE_ID,
@@ -27,13 +26,13 @@ from app.services.apisix_system_resources import (
     PROTECTED_UPSTREAM_IDS,
     RETIRED_LLM_BI_ROUTE_IDS,
     RETIRED_LLM_BI_UPSTREAM_ID,
+    SYSTEM_ROUTE_URIS,
 )
 from app.services.openapi_export import build_openapi_spec
-from tests.test_llm_routes import VK, _FakeApisix, _status_error
-from tests.test_main import _DummyTask, _fake_session, _keyed_get_resource
+from tests.helpers import BIFROST_VK, FakeApisix, http_status_error, run_lifespan
 
 
-async def _put_404_route(fake: _FakeApisix) -> None:
+async def _put_404_route(fake: FakeApisix) -> None:
     with patch("app.services.apisix_client.put_resource", fake.put_resource):
         await _put_not_found_route(
             LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route(), "/api/llm-bi"
@@ -72,11 +71,11 @@ def test_the_old_ids_stay_system_resources() -> None:
     ],
 )
 def test_custom_routes_cannot_take_the_llm_bi_namespace(uri: str, shadowed: bool) -> None:
-    assert (_shadowed_system_uri(uri, list(_SYSTEM_ROUTE_URIS)) is not None) is shadowed
+    assert (_shadowed_system_uri(uri, list(SYSTEM_ROUTE_URIS)) is not None) is shadowed
 
 
 async def test_installs_the_404_route() -> None:
-    fake = _FakeApisix()
+    fake = FakeApisix()
 
     await _put_404_route(fake)
 
@@ -85,8 +84,8 @@ async def test_installs_the_404_route() -> None:
 
 
 async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None:
-    refused = _status_error(400, '{"error_msg":"failed to check the configuration of plugin"}')
-    fake = _FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): refused})
+    refused = http_status_error(400, '{"error_msg":"failed to check the configuration of plugin"}')
+    fake = FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): refused})
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
         await _put_404_route(fake)
@@ -95,7 +94,7 @@ async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None
 
 
 async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
-    fake = _FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): _status_error(503)})
+    fake = FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): http_status_error(503)})
 
     with pytest.raises(httpx.HTTPStatusError):
         await _put_404_route(fake)
@@ -106,32 +105,15 @@ async def test_lifespan_installs_it_as_part_of_boot_provisioning() -> None:
     put_resource = AsyncMock(side_effect=lambda resource, resource_id, body: order.append(resource_id))
     replay = AsyncMock(side_effect=lambda db: order.append("<replay>"))
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.async_session", _fake_session),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-                BIFROST_TEST_VK=VK,
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
+            BIFROST_TEST_VK=BIFROST_VK,
         ),
-        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch("app.services.apisix_client.list_resources", AsyncMock(return_value={"items": []})),
-        patch("app.main.api_keys.sync_all_consumer_route_restrictions", replay),
-        patch("app.services.alert_checker.start_checker", new=AsyncMock(return_value=_DummyTask())),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(FastAPI()):
-            pass
+        put_resource=put_resource,
+        replay=replay,
+    )
 
     assert order.index("llm-models") < order.index(LLM_BI_NOT_FOUND_ROUTE_ID) < order.index("<replay>")
 

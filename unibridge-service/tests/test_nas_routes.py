@@ -15,28 +15,7 @@ from app.services.nas_security import (
     NasUnavailableError,
 )
 from tests.conftest import auth_header
-
-
-async def _create_apikey(client, admin_token, *, name, key, allowed_databases, allowed_routes):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={
-            "username": name,
-            "plugins": {"key-auth": {"key": key}},
-        })
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
-        resp = await client.post(
-            "/admin/api-keys",
-            json={
-                "name": name,
-                "api_key": key,
-                "allowed_databases": allowed_databases,
-                "allowed_routes": allowed_routes,
-            },
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 201, resp.text
+from tests.helpers import create_api_key_via_admin
 
 
 # A sample list response that follows the FROZEN shape from contract §6.
@@ -71,11 +50,11 @@ _LIST_PAYLOAD = {
 
 
 async def test_browse_apikey_rejects_unallowed_alias(client, admin_token):
-    await _create_apikey(
+    await create_api_key_via_admin(
         client,
         admin_token,
         name="nas-app",
-        key="nas-key",
+        api_key="nas-key",
         allowed_databases=["allowed-nas"],
         allowed_routes=["nas-api"],
     )
@@ -93,11 +72,11 @@ async def test_browse_apikey_rejects_unallowed_alias(client, admin_token):
 
 
 async def test_browse_apikey_allows_configured_alias(client, admin_token):
-    await _create_apikey(
+    await create_api_key_via_admin(
         client,
         admin_token,
         name="nas-allowed-app",
-        key="nas-key-allowed",
+        api_key="nas-key-allowed",
         allowed_databases=["allowed-nas"],
         allowed_routes=["nas-api"],
     )
@@ -115,11 +94,11 @@ async def test_browse_apikey_allows_configured_alias(client, admin_token):
 
 
 async def test_browse_apikey_wildcard_allows_any_alias(client, admin_token):
-    await _create_apikey(
+    await create_api_key_via_admin(
         client,
         admin_token,
         name="nas-wild",
-        key="nas-wild-key",
+        api_key="nas-wild-key",
         allowed_databases=["*"],
         allowed_routes=["nas-api"],
     )

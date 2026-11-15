@@ -7,9 +7,9 @@ import socket
 
 import httpx
 import pytest
-from pytest_httpx import HTTPXMock
 
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
+from tests.http_mock import HTTPMock
 
 
 class TestRenderTemplate:
@@ -129,8 +129,8 @@ class TestRecipientItemRendering:
 
 
 class TestSendWebhook:
-    async def test_send_webhook_success(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url="http://example.com/hook", status_code=200)
+    async def test_send_webhook_success(self, http_mock: HTTPMock):
+        http_mock.add_response(url="http://example.com/hook", status_code=200)
         ok, err = await send_webhook(
             url="http://example.com/hook",
             payload='{"msg":"test"}',
@@ -139,8 +139,8 @@ class TestSendWebhook:
         assert ok is True
         assert err is None
 
-    async def test_send_webhook_failure(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url="http://example.com/hook", status_code=500)
+    async def test_send_webhook_failure(self, http_mock: HTTPMock):
+        http_mock.add_response(url="http://example.com/hook", status_code=500)
         ok, err = await send_webhook(
             url="http://example.com/hook",
             payload='{"msg":"test"}',
@@ -149,19 +149,19 @@ class TestSendWebhook:
         assert ok is False
         assert err is not None
 
-    async def test_send_webhook_with_custom_headers(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url="http://example.com/hook", status_code=200)
+    async def test_send_webhook_with_custom_headers(self, http_mock: HTTPMock):
+        http_mock.add_response(url="http://example.com/hook", status_code=200)
         ok, _ = await send_webhook(
             url="http://example.com/hook",
             payload='{"msg":"test"}',
             headers={"X-Token": "secret"},
         )
         assert ok is True
-        req = httpx_mock.get_request()
+        req = http_mock.get_request()
         assert req.headers["X-Token"] == "secret"
 
-    async def test_send_webhook_failure_detail_names_the_exception(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url="http://example.com/hook", status_code=500)
+    async def test_send_webhook_failure_detail_names_the_exception(self, http_mock: HTTPMock):
+        http_mock.add_response(url="http://example.com/hook", status_code=500)
         _, err = await send_webhook(
             url="http://example.com/hook",
             payload='{"msg":"test"}',
@@ -170,10 +170,10 @@ class TestSendWebhook:
         assert err.startswith("HTTPStatusError: ")
         assert "500" in err
 
-    async def test_send_webhook_failure_hides_url_token(self, httpx_mock: HTTPXMock, caplog):
+    async def test_send_webhook_failure_hides_url_token(self, http_mock: HTTPMock, caplog):
         """The detail is persisted on the history row that alerts.read can list."""
         url = "https://hooks.example.com/services/T1/B2?token=SUPERSECRETTOKEN"
-        httpx_mock.add_response(url=url, status_code=403)
+        http_mock.add_response(url=url, status_code=403)
 
         with caplog.at_level(logging.WARNING):
             ok, err = await send_webhook(url=url, payload='{"msg":"test"}', headers=None)
@@ -186,9 +186,9 @@ class TestSendWebhook:
         assert "SUPERSECRETTOKEN" not in caplog.text
         assert "/services/T1/B2" not in caplog.text
 
-    async def test_send_webhook_failure_hides_token_in_transport_error(self, httpx_mock: HTTPXMock):
+    async def test_send_webhook_failure_hides_token_in_transport_error(self, http_mock: HTTPMock):
         url = "https://hooks.example.com/hook?token=SUPERSECRETTOKEN"
-        httpx_mock.add_exception(
+        http_mock.add_exception(
             httpx.ConnectError(f"connection to {url} failed"), url=url
         )
         ok, err = await send_webhook(url=url, payload='{"msg":"test"}', headers=None)

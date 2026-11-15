@@ -145,6 +145,27 @@ class TestServicesComparison:
         assert "topk(10" in mock.call_args_list[0].args[0]
         assert " or " in mock.call_args_list[0].args[0]
 
+    @pytest.mark.parametrize("path", ["services-comparison", "handlers-comparison"])
+    async def test_infinite_latency_returns_null(self, client, admin_token, path):
+        # histogram_quantile answers +Inf when the quantile lands in the +Inf
+        # bucket; JSON cannot carry it, so the row reads "no value", not a 500.
+        label = "service" if path == "services-comparison" else "handler"
+        requests_res = [{"metric": {label: "a"}, "value": [0, "30"]}]
+        p50_res = [{"metric": {label: "a"}, "value": [0, "-Inf"]}]
+        p95_res = [{"metric": {label: "a"}, "value": [0, "+Inf"]}]
+        total_res = [{"value": [0, "30"]}]
+        mock = AsyncMock(side_effect=[requests_res, [], p50_res, p95_res, total_res])
+        with patch(_INSTANT, mock):
+            resp = await client.get(
+                f"/admin/external/metrics/{path}?range=1h&service=orders-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200, resp.text
+        row = resp.json()[label + "s"][0]
+        assert row[label] == "a" and row["requests"] == 30
+        assert row["latency_p50_ms"] is None
+        assert row["latency_p95_ms"] is None
+
 
 class TestRequestsTotal:
     async def test_returns_timeseries(self, client, admin_token):

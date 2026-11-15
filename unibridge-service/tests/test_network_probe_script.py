@@ -8,14 +8,14 @@ import json
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from app.schemas import ProbeBatch
+from tests.helpers import REPO_ROOT
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "network_probe.py"
+SCRIPT = REPO_ROOT / "scripts" / "network_probe.py"
 
 
 @pytest.fixture(scope="module")

@@ -20,12 +20,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+from tests.helpers import BLUEGREEN_INFRA_COMPOSE_FILE, COMPOSE_FILE, REPO_ROOT, load_yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
-BLUEGREEN_INFRA_COMPOSE_FILE = REPO_ROOT / "docker-compose.infra.yml"
 COMPOSE_FILES = (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE)
 
 ETCD_INIT_SCRIPT = REPO_ROOT / "etcd" / "init-auth.sh"
@@ -41,12 +38,8 @@ ETCD_DATA_MOUNT = "/bitnami/etcd"
 ETCD_DATA_DIR = f"{ETCD_DATA_MOUNT}/data"
 
 
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
 def _service(path: Path, name: str) -> dict:
-    services = _load_yaml(path)["services"]
+    services = load_yaml(path)["services"]
     assert name in services, f"{path.name} has no '{name}' service"
     return services[name]
 

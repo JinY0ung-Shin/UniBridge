@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.routers.api_keys import _build_limit_count_plugin
 from tests.conftest import auth_header
+from tests.helpers import mock_api_keys_apisix
 
 ROUTE_FIXTURES = {"items": []}
 
@@ -36,10 +37,10 @@ def _consumer_put_bodies(mock_apisix):
 async def test_create_api_key_provisions_limit_count(client, admin_token):
     """create_api_key with rate_limit_per_minute must provision the
     limit-count plugin on the APISIX consumer alongside key-auth."""
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "rl-create"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "rl-create"}),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
 
         resp = await client.post(
             "/admin/api-keys",
@@ -66,10 +67,10 @@ async def test_update_api_key_rate_limit_only_preserves_key_auth(client, admin_t
     PRESERVING the consumer's existing key-auth — regression guard against
     dropping key-auth on the consumer PUT."""
     # Create the key first (no rate limit yet).
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "rl-update"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "rl-update"}),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
         create_resp = await client.post(
             "/admin/api-keys",
             json={"name": "rl-update", "api_key": "rl-key-2"},
@@ -108,10 +109,10 @@ async def test_update_clears_rate_limit_when_explicit_null(client, admin_token):
     rate_limit_per_minute must become None."""
     # Create the key WITH a rate limit so APISIX consumer has limit-count and
     # the DB row has rate_limit_per_minute=30.
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "rl-clear"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "rl-clear"}),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
         create_resp = await client.post(
             "/admin/api-keys",
             json={"name": "rl-clear", "api_key": "rl-key-3", "rate_limit_per_minute": 30},
@@ -154,10 +155,10 @@ async def test_update_omitted_rate_limit_preserves_existing(client, admin_token)
     limit untouched: limit-count stays on the consumer body and the DB row's
     rate_limit_per_minute is unchanged."""
     # Create the key WITH a rate limit.
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={"username": "rl-keep"})
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    with mock_api_keys_apisix(
+        put_resource=AsyncMock(return_value={"username": "rl-keep"}),
+        list_resources=AsyncMock(return_value=ROUTE_FIXTURES),
+    ) as mock_apisix:
         create_resp = await client.post(
             "/admin/api-keys",
             json={"name": "rl-keep", "api_key": "rl-key-4", "rate_limit_per_minute": 30},

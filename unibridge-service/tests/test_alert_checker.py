@@ -9,31 +9,7 @@ from unittest.mock import AsyncMock, patch
 from app.services.alert_checker import run_single_check
 from app.services.alert_state import AlertStateManager
 from tests.conftest import fresh_module_copy
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def scalars(self):
-        return SimpleNamespace(all=lambda: self.rows)
-
-    def scalar_one_or_none(self):
-        return self.rows[0] if self.rows else None
-
-    def one_or_none(self):
-        return self.rows[0] if self.rows else None
-
-
-class _FakeSessionContext:
-    def __init__(self, db):
-        self.db = db
-
-    async def __aenter__(self):
-        return self.db
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+from tests.helpers import FakeResult, FakeSessionContext
 
 
 def _threshold_db(threshold: float = 10.0, min_requests: int = 0):
@@ -43,7 +19,7 @@ def _threshold_db(threshold: float = 10.0, min_requests: int = 0):
     exercise the threshold logic directly.
     """
     return SimpleNamespace(
-        execute=AsyncMock(return_value=_FakeResult([(threshold, min_requests)]))
+        execute=AsyncMock(return_value=FakeResult(rows=[(threshold, min_requests)]))
     )
 
 
@@ -405,7 +381,7 @@ class TestAlertChecker:
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 12.5, 100.0)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+             patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(10.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
@@ -447,7 +423,7 @@ class TestAlertChecker:
             with patch("app.services.alert_checker._check_db_health", new=AsyncMock(return_value=[])), \
                  patch("app.services.alert_checker._check_upstream_health", new=AsyncMock(return_value=[])), \
                  patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("checkout", 12.5, 100.0)])), \
-                 patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+                 patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(10.0))), \
                  patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
                 await run_single_check(state, trigger_after_failures=2)
         finally:
@@ -484,7 +460,7 @@ class TestAlertChecker:
             with patch("app.services.alert_checker._check_db_health", new=AsyncMock(return_value=[])), \
                  patch("app.services.alert_checker._check_upstream_health", new=AsyncMock(return_value=[])), \
                  patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=rows)), \
-                 patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+                 patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(10.0))), \
                  patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
                 await run_single_check(state, trigger_after_failures=2)
         finally:
@@ -513,7 +489,7 @@ class TestAlertChecker:
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0, 100.0)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(3.0))), \
+             patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(3.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
@@ -540,7 +516,7 @@ class TestAlertChecker:
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0, 100.0)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+             patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(10.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
@@ -566,7 +542,7 @@ class TestAlertChecker:
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 50.0, 5.0)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0, min_requests=20))), \
+             patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(10.0, min_requests=20))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
@@ -619,14 +595,6 @@ class TestAlertChecker:
                 await task
 
         assert sleep_delays == [75.0]
-
-    async def test_get_check_interval_seconds_reads_alert_settings(self):
-        from app.services import alert_checker
-
-        fake_db = SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([90])))
-
-        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)):
-            assert await alert_checker._get_check_interval_seconds() == 90
 
 
 class TestCheckRouteErrorRate:
@@ -730,7 +698,7 @@ class TestCheckRouteErrorRate:
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(5.0))), \
+             patch("app.services.alert_checker.async_session", return_value=FakeSessionContext(_threshold_db(5.0))), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []

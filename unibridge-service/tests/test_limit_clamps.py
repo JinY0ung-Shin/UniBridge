@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.models import QueryTemplate
@@ -25,7 +24,7 @@ from app.schemas import (
 from app.services import query_executor
 from app.services.query_executor import execute_clickhouse_query, execute_neo4j_query
 from tests.conftest import auth_header
-from tests.test_admin import _cm_patch
+from tests.helpers import cm_patch, register_database, sessions
 
 
 ABOVE_MAX = settings.MAX_ROW_LIMIT + 5_000
@@ -109,7 +108,7 @@ async def test_graphdb_route_clamps_default_row_limit(client, admin_token, monke
     monkeypatch.setattr(
         "app.routers.query.settings_manager.default_row_limit", ABOVE_MAX
     )
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json={
@@ -149,29 +148,6 @@ async def test_graphdb_route_clamps_default_row_limit(client, admin_token, monke
 # ── Query templates ──────────────────────────────────────────────────────────
 
 
-async def _create_database(client, admin_token, alias: str = "tmpl-db") -> None:
-    with patch(
-        "app.routers.admin.connection_manager.add_connection", new_callable=AsyncMock,
-    ), patch(
-        "app.routers.admin.connection_manager.get_status",
-        return_value={"status": "registered"},
-    ):
-        resp = await client.post(
-            "/admin/query/databases",
-            json={
-                "alias": alias,
-                "db_type": "postgres",
-                "host": "localhost",
-                "port": 5432,
-                "database": "app",
-                "username": "user",
-                "password": "pass",
-            },
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 201, resp.text
-
-
 async def _create_template(
     client, admin_token, *, path: str, default_limit: int | None = 50,
 ) -> None:
@@ -190,7 +166,7 @@ async def _create_template(
 
 
 async def test_template_create_above_max_row_limit_is_rejected(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token, "tmpl-db")
 
     resp = await client.post(
         "/admin/query/templates",
@@ -208,7 +184,7 @@ async def test_template_create_above_max_row_limit_is_rejected(client, admin_tok
 
 
 async def test_template_update_above_max_row_limit_is_rejected(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token, "tmpl-db")
     await _create_template(client, admin_token, path="reports/bounded")
 
     resp = await client.put(
@@ -224,13 +200,10 @@ async def test_stored_template_limit_above_max_executes_clamped(
     client, admin_token, seeded_db,
 ):
     """A row stored before the ceiling existed must execute, not raise in-handler."""
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token, "tmpl-db")
     await _create_template(client, admin_token, path="reports/legacy")
 
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(
             select(QueryTemplate).where(QueryTemplate.path == "reports/legacy")
         )

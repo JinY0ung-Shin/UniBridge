@@ -8,16 +8,15 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AuditLog
 
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 async def _seed_audit_logs(engine, rows: list[dict]) -> None:
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(engine)() as db:
         for row in rows:
             db.add(AuditLog(**row))
         await db.commit()

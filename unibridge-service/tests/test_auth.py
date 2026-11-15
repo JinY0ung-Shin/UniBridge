@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 import jwt
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import (
     ALL_PERMISSIONS,
@@ -24,6 +23,7 @@ from app.config import settings
 from app.models import Role, RolePermission
 
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -218,16 +218,14 @@ class TestGetCurrentUser:
 class TestGetRolePermissions:
     async def test_returns_admin_permissions(self, seeded_db):
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             perms = await get_role_permissions(db, "admin")
             assert isinstance(perms, set)
             assert perms == set(ALL_PERMISSIONS)
 
     async def test_returns_user_permissions(self, seeded_db):
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             perms = await get_role_permissions(db, "user")
             assert perms == {"gateway.monitoring.self", "apikeys.self"}
             assert "query.execute" not in perms
@@ -236,16 +234,14 @@ class TestGetRolePermissions:
 
     async def test_returns_empty_set_for_unknown_role(self, seeded_db):
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             perms = await get_role_permissions(db, "nonexistent_role")
             assert perms == set()
 
     async def test_caches_results(self, seeded_db):
         """After first call, cache should be populated and second call uses cache."""
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             perms1 = await get_role_permissions(db, "admin")
             # Cache is now warm; verify _perm_cache is populated
             import app.auth as auth_mod
@@ -269,8 +265,7 @@ class TestInvalidatePermissionCache:
         import app.auth as auth_mod
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             # Warm the cache
             await get_role_permissions(db, "admin")
             assert len(auth_mod._perm_cache) > 0
@@ -284,8 +279,7 @@ class TestInvalidatePermissionCache:
         import app.auth as auth_mod
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             await get_role_permissions(db, "admin")
             first_ts = auth_mod._perm_cache_ts
 
@@ -309,8 +303,7 @@ class TestCacheTTLBehavior:
         import app.auth as auth_mod
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             await get_role_permissions(db, "admin")
             first_ts = auth_mod._perm_cache_ts
 
@@ -326,8 +319,7 @@ class TestCacheTTLBehavior:
         import app.auth as auth_mod
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             await get_role_permissions(db, "admin")
             ts_after_first = auth_mod._perm_cache_ts
 
@@ -343,8 +335,7 @@ class TestCacheTTLBehavior:
         import app.auth as auth_mod
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             # Warm cache
             await get_role_permissions(db, "admin")
 
@@ -377,8 +368,7 @@ class TestCacheTTLBehavior:
 class TestRequirePermission:
     async def test_returns_user_when_permission_exists(self, seeded_db):
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             token = create_token("testadmin", "admin")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
@@ -393,8 +383,7 @@ class TestRequirePermission:
         from fastapi import HTTPException
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
@@ -407,8 +396,7 @@ class TestRequirePermission:
     async def test_passes_if_any_permission_matches(self, seeded_db):
         """When multiple permissions are required, passing ANY one suffices."""
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
@@ -422,8 +410,7 @@ class TestRequirePermission:
         from fastapi import HTTPException
 
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
@@ -437,8 +424,7 @@ class TestRequirePermission:
 
     async def test_user_lacks_execute_and_write(self, seeded_db):
         await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
@@ -469,7 +455,7 @@ class TestSeedRoles:
         # We need to point the database module's session factory at our test engine
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -484,7 +470,7 @@ class TestSeedRoles:
     async def test_seed_admin_has_all_permissions(self, engine):
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -500,7 +486,7 @@ class TestSeedRoles:
     async def test_seed_user_permissions(self, engine):
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -516,7 +502,7 @@ class TestSeedRoles:
     async def test_seed_roles_are_marked_as_system(self, engine):
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -529,7 +515,7 @@ class TestSeedRoles:
         """Running _seed_roles twice should not create duplicate roles."""
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
             await _seed_roles()
@@ -556,7 +542,7 @@ class TestSeedRoles:
         """
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -596,7 +582,7 @@ class TestSeedRoles:
         """Re-seeding should restore the description to the seed value."""
         from app.database import _seed_roles
 
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = sessions(engine)
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
@@ -630,7 +616,7 @@ class TestInitDb:
         from app.database import init_db
 
         test_engine = _create_engine("sqlite+aiosqlite:///:memory:", echo=False)
-        test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        test_session_factory = sessions(test_engine)
 
         with patch("app.database.engine", test_engine), \
              patch("app.database.async_session", test_session_factory):
@@ -656,7 +642,7 @@ class TestInitDb:
         from app.database import init_db
 
         test_engine = _create_engine("sqlite+aiosqlite:///:memory:", echo=False)
-        test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        test_session_factory = sessions(test_engine)
 
         with patch("app.database.engine", test_engine), \
              patch("app.database.async_session", test_session_factory):
@@ -731,7 +717,8 @@ class TestAuthMeEndpoint:
         assert data["username"] == "testadmin"
         assert data["role"] == "admin"
         assert isinstance(data["permissions"], list)
-        # admin should have all permissions
+        # admin should have all permissions, each once
+        assert len(data["permissions"]) == len(ALL_PERMISSIONS)
         assert set(data["permissions"]) == set(ALL_PERMISSIONS)
 
     async def test_get_me_with_user_token(self, client, user_token):
@@ -740,13 +727,15 @@ class TestAuthMeEndpoint:
         data = resp.json()
         assert data["username"] == "testuser"
         assert data["role"] == "user"
+        assert len(data["permissions"]) == 2
         assert set(data["permissions"]) == {"gateway.monitoring.self", "apikeys.self"}
         assert "query.execute" not in data["permissions"]
         assert "admin.roles.write" not in data["permissions"]
 
     async def test_get_me_without_token_returns_401(self, client):
+        """No Authorization header yields 401 from HTTPBearer."""
         resp = await client.get("/auth/me")
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 401
 
     async def test_get_me_with_invalid_token_returns_401(self, client):
         resp = await client.get("/auth/me", headers=auth_header("bogus-token"))
@@ -772,10 +761,11 @@ class TestAuthRolesEndpoint:
 
     async def test_list_roles_returns_role_names(self, client, admin_token):
         resp = await client.get("/auth/roles", headers=auth_header(admin_token))
+        assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert "admin" in data
-        assert "user" in data
+        # The seeded roles, sorted by name.
+        assert data == ["admin", "user"]
 
     async def test_list_roles_returns_sorted(self, client, admin_token):
         resp = await client.get("/auth/roles", headers=auth_header(admin_token))
@@ -801,8 +791,8 @@ class TestAdminPermissionsEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert set(data) == set(ALL_PERMISSIONS)
-        assert len(data) == len(ALL_PERMISSIONS)
+        # In ALL_PERMISSIONS order, not just the same set.
+        assert data == ALL_PERMISSIONS
 
     async def test_list_permissions_as_user_forbidden(self, client, user_token):
         """user role does not have admin.roles.read."""
