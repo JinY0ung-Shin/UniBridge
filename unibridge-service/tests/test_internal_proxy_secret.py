@@ -22,7 +22,7 @@ from app.main import (
     INTERNAL_PROXY_ROUTE_IDS,
     lifespan,
 )
-from tests.test_main import _DummyTask, _fake_get_db, _keyed_get_resource
+from tests.test_main import _DummyTask, _fake_session, _keyed_get_resource
 
 
 # ── validate_settings ──────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ def _lifespan_patches(settings_ns, get_resource, put_resource, sleep=None):
     patches = [
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -332,7 +332,7 @@ async def test_reconcile_loop_writes_only_while_active():
     active = AsyncMock(side_effect=[False, True, True])
     with (
         patch("asyncio.sleep", fake_sleep),
-        patch("app.main.is_active_instance", active),
+        patch("app.services.active_color.is_active_instance", active),
         patch("app.main._reconcile_internal_proxy_header", reconcile),
     ):
         with pytest.raises(asyncio.CancelledError):

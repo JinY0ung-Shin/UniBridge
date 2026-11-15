@@ -30,7 +30,7 @@ from app.services.node_path_prefix import (
     validate_upstream_node_prefixes,
 )
 from tests.conftest import auth_header
-from tests.test_main import _DummyTask, _fake_get_db
+from tests.test_main import _DummyTask, _fake_session
 
 UNKNOWN_PLUGIN_BODY = '{"error_msg":"unknown plugin [unibridge-node-path-prefix]"}'
 RULE_BODY = {"plugins": {PLUGIN_NAME: {}}}
@@ -787,7 +787,7 @@ async def _run_lifespan(put_resource: AsyncMock, list_resources: AsyncMock | Non
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),

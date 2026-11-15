@@ -2208,9 +2208,12 @@ def test_deploy_reprovisions_when_the_mcp_route_lacks_the_artifact_paths(tmp_pat
         tmp_path, {"routes/mcp-api": before_artifacts}, BIFROST_TEST_VK=BIFROST_VK
     )
     # What the check looks for is what provisioning writes.
-    main_py = (REPO_ROOT / "unibridge-service" / "app" / "main.py").read_text(encoding="utf-8")
-    assert '"uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"]' in main_py
-    assert '"regex_uri": ["^/api/mcp(.*)", "/mcp$1"]' in main_py
+    from app.main import _service_route
+    from app.services.apisix_system_resources import MCP_API_ROUTE_ID, SERVICE_ROUTES
+
+    mcp_route = _service_route(next(r for r in SERVICE_ROUTES if r.id == MCP_API_ROUTE_ID))
+    assert mcp_route["uris"] == ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"]
+    assert mcp_route["plugins"]["proxy-rewrite"]["regex_uri"] == ["^/api/mcp(.*)", "/mcp$1"]
 
 
 def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(

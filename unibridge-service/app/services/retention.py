@@ -8,7 +8,6 @@ holds a long transaction nor locks out writers on SQLite.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -16,7 +15,7 @@ from sqlalchemy import Column, delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AdminAuditLog, AlertHistory, AuditLog
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
 from app.services.settings_manager import settings_manager
 
 logger = logging.getLogger(__name__)
@@ -119,22 +118,16 @@ async def run_retention_loop(
 ) -> None:
     """Background loop: sweep once shortly after boot, then hourly.
 
-    Only the active blue/green color sweeps. Both colors share one meta DB, so
-    an ungated standby would race the active color through the same batched
-    deletes for no benefit. The check is per cycle, not once at startup: a
-    promote or rollback rewrites the APISIX upstream without restarting
-    containers, so ownership of the sweep has to be able to move on the next
-    hourly tick.
-
-    Every failure is swallowed so the task outlives a transient database
-    problem — a missed sweep is caught by the next one.
+    Only the active blue/green color sweeps (``run_periodic``). Both colors
+    share one meta DB, so an ungated standby would race the active color
+    through the same batched deletes for no benefit. Every failure is swallowed
+    so the task outlives a transient database problem — a missed sweep is
+    caught by the next one.
     """
     logger.info("Log retention cleanup started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                await run_retention_cleanup()
-        except Exception:
-            logger.exception("Log retention cleanup cycle failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        run_retention_cleanup,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("Log retention cleanup cycle failed"),
+    )

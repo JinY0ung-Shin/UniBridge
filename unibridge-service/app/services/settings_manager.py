@@ -12,6 +12,21 @@ from app.models import SystemConfig
 
 logger = logging.getLogger(__name__)
 
+# Integer settings, stored in SystemConfig under their attribute names.
+_INT_KEYS = (
+    "rate_limit_per_minute",
+    "max_concurrent_queries",
+    "default_row_limit",
+    "query_route_timeout",
+    "gateway_route_timeout",
+)
+# Log retention in days: integers that may not be negative.
+_RETENTION_KEYS = (
+    "audit_log_retention_days",
+    "admin_audit_log_retention_days",
+    "alert_history_retention_days",
+)
+
 
 class SettingsManager:
     """Manages runtime-configurable settings with DB persistence."""
@@ -40,51 +55,18 @@ class SettingsManager:
         result = await db.execute(select(SystemConfig))
         rows = {row.key: row.value for row in result.scalars().all()}
 
-        if "rate_limit_per_minute" in rows:
+        for key in (*_INT_KEYS, *_RETENTION_KEYS):
+            if key not in rows:
+                continue
             try:
-                self.rate_limit_per_minute = int(rows["rate_limit_per_minute"])
+                value = int(rows[key])
             except ValueError:
-                logger.warning("Invalid rate_limit_per_minute in DB, using default")
-
-        if "max_concurrent_queries" in rows:
-            try:
-                self.max_concurrent_queries = int(rows["max_concurrent_queries"])
-            except ValueError:
-                logger.warning("Invalid max_concurrent_queries in DB, using default")
-
-        if "default_row_limit" in rows:
-            try:
-                self.default_row_limit = int(rows["default_row_limit"])
-            except ValueError:
-                logger.warning("Invalid default_row_limit in DB, using default")
-
-        if "query_route_timeout" in rows:
-            try:
-                self.query_route_timeout = int(rows["query_route_timeout"])
-            except ValueError:
-                logger.warning("Invalid query_route_timeout in DB, using default")
-
-        if "gateway_route_timeout" in rows:
-            try:
-                self.gateway_route_timeout = int(rows["gateway_route_timeout"])
-            except ValueError:
-                logger.warning("Invalid gateway_route_timeout in DB, using default")
-
-        for retention_key in (
-            "audit_log_retention_days",
-            "admin_audit_log_retention_days",
-            "alert_history_retention_days",
-        ):
-            if retention_key in rows:
-                try:
-                    value = int(rows[retention_key])
-                except ValueError:
-                    logger.warning("Invalid %s in DB, using default", retention_key)
-                    continue
-                if value < 0:
-                    logger.warning("Negative %s in DB, using default", retention_key)
-                    continue
-                setattr(self, retention_key, value)
+                logger.warning("Invalid %s in DB, using default", key)
+                continue
+            if key in _RETENTION_KEYS and value < 0:
+                logger.warning("Negative %s in DB, using default", key)
+                continue
+            setattr(self, key, value)
 
         if "blocked_sql_keywords" in rows:
             try:
@@ -123,41 +105,32 @@ class SettingsManager:
         """Update settings in memory and persist to DB."""
         updates: dict[str, str] = {}
 
-        if rate_limit_per_minute is not None:
-            self.rate_limit_per_minute = rate_limit_per_minute
-            updates["rate_limit_per_minute"] = str(rate_limit_per_minute)
-
-        if max_concurrent_queries is not None:
-            self.max_concurrent_queries = max_concurrent_queries
-            updates["max_concurrent_queries"] = str(max_concurrent_queries)
-
-        if default_row_limit is not None:
-            self.default_row_limit = default_row_limit
-            updates["default_row_limit"] = str(default_row_limit)
-
-        if query_route_timeout is not None:
-            self.query_route_timeout = query_route_timeout
-            updates["query_route_timeout"] = str(query_route_timeout)
-
-        if gateway_route_timeout is not None:
-            self.gateway_route_timeout = gateway_route_timeout
-            updates["gateway_route_timeout"] = str(gateway_route_timeout)
+        for key, value in (
+            ("rate_limit_per_minute", rate_limit_per_minute),
+            ("max_concurrent_queries", max_concurrent_queries),
+            ("default_row_limit", default_row_limit),
+            ("query_route_timeout", query_route_timeout),
+            ("gateway_route_timeout", gateway_route_timeout),
+        ):
+            if value is not None:
+                setattr(self, key, value)
+                updates[key] = str(value)
 
         if blocked_sql_keywords is not None:
             self.blocked_sql_keywords = blocked_sql_keywords
             updates["blocked_sql_keywords"] = json.dumps(blocked_sql_keywords)
 
-        for retention_key, retention_value in (
+        for key, value in (
             ("audit_log_retention_days", audit_log_retention_days),
             ("admin_audit_log_retention_days", admin_audit_log_retention_days),
             ("alert_history_retention_days", alert_history_retention_days),
         ):
-            if retention_value is None:
+            if value is None:
                 continue
-            if retention_value < 0:
-                raise ValueError(f"{retention_key} must be >= 0")
-            setattr(self, retention_key, retention_value)
-            updates[retention_key] = str(retention_value)
+            if value < 0:
+                raise ValueError(f"{key} must be >= 0")
+            setattr(self, key, value)
+            updates[key] = str(value)
 
         for key, value in updates.items():
             existing = await db.execute(
@@ -174,15 +147,8 @@ class SettingsManager:
     def get_all(self) -> dict:
         """Return all settings as a dict."""
         return {
-            "rate_limit_per_minute": self.rate_limit_per_minute,
-            "max_concurrent_queries": self.max_concurrent_queries,
-            "default_row_limit": self.default_row_limit,
-            "query_route_timeout": self.query_route_timeout,
-            "gateway_route_timeout": self.gateway_route_timeout,
-            "blocked_sql_keywords": self.blocked_sql_keywords,
-            "audit_log_retention_days": self.audit_log_retention_days,
-            "admin_audit_log_retention_days": self.admin_audit_log_retention_days,
-            "alert_history_retention_days": self.alert_history_retention_days,
+            key: getattr(self, key)
+            for key in (*_INT_KEYS, "blocked_sql_keywords", *_RETENTION_KEYS)
         }
 
 

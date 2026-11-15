@@ -356,8 +356,8 @@ async def test_loop_waits_before_the_first_run_then_repeats():
         if len(sleeps) >= 3:
             raise asyncio.CancelledError
 
-    with patch("app.services.consumer_restrictions.asyncio.sleep", _fake_sleep), \
-         patch("app.services.consumer_restrictions.is_active_instance",
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
+         patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=True)), \
          patch("app.services.consumer_restrictions.run_expiry_reconcile_once", once):
         with pytest.raises(asyncio.CancelledError):
@@ -384,10 +384,10 @@ async def test_loop_makes_no_apisix_call_on_the_standby_color(engine):
     apisix.list_resources = AsyncMock(return_value={"items": []})
     apisix.put_resource = AsyncMock()
 
-    with patch("app.services.consumer_restrictions.asyncio.sleep", _fake_sleep), \
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.consumer_restrictions.apisix_client", apisix), \
          patch("app.database.async_session", _session_factory(engine)), \
-         patch("app.services.consumer_restrictions.is_active_instance",
+         patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=False)):
         with pytest.raises(asyncio.CancelledError):
             await cr.run_expiry_reconcile_loop()
@@ -409,10 +409,10 @@ async def test_loop_reconciles_through_the_module_client_on_the_active_color(eng
         if sleeps >= 2:
             raise asyncio.CancelledError
 
-    with patch("app.services.consumer_restrictions.asyncio.sleep", _fake_sleep), \
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.consumer_restrictions.apisix_client", stub), \
          patch("app.database.async_session", _session_factory(engine)), \
-         patch("app.services.consumer_restrictions.is_active_instance",
+         patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=True)):
         with pytest.raises(asyncio.CancelledError):
             await cr.run_expiry_reconcile_loop()
@@ -431,8 +431,8 @@ async def test_loop_survives_a_failing_cycle(caplog):
 
     once = AsyncMock(side_effect=[RuntimeError("apisix down"), cr.ReconcileResult()])
 
-    with patch("app.services.consumer_restrictions.asyncio.sleep", _fake_sleep), \
-         patch("app.services.consumer_restrictions.is_active_instance",
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
+         patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=True)), \
          patch("app.services.consumer_restrictions.run_expiry_reconcile_once", once):
         with pytest.raises(asyncio.CancelledError):

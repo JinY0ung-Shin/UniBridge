@@ -30,7 +30,7 @@ from app.services.apisix_system_resources import (
 )
 from app.services.openapi_export import build_openapi_spec
 from tests.test_llm_routes import VK, _FakeApisix, _status_error
-from tests.test_main import _DummyTask, _fake_get_db, _keyed_get_resource
+from tests.test_main import _DummyTask, _fake_session, _keyed_get_resource
 
 
 async def _put_404_route(fake: _FakeApisix) -> None:
@@ -109,7 +109,7 @@ async def test_lifespan_installs_it_as_part_of_boot_provisioning() -> None:
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),

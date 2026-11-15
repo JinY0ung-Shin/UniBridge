@@ -885,11 +885,9 @@ class TestApisixListResources:
         }
         mock_resp = _mock_response(json_data=mock_data)
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.list_resources("routes")
@@ -902,11 +900,9 @@ class TestApisixListResources:
     async def test_list_routes_url_construction(self):
         mock_resp = _mock_response(json_data={"list": [], "total": 0})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             await apisix_client.list_resources("upstreams")
@@ -919,11 +915,9 @@ class TestApisixListResources:
     async def test_list_resources_empty_list(self):
         mock_resp = _mock_response(json_data={"list": None, "total": 0})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.list_resources("routes")
@@ -941,11 +935,9 @@ class TestApisixListResources:
         }
         mock_resp = _mock_response(json_data=mock_data)
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.list_resources("routes")
@@ -960,11 +952,9 @@ class TestApisixGetResource:
         mock_data = {"value": {"id": "123", "uri": "/test"}}
         mock_resp = _mock_response(json_data=mock_data)
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.get_resource("routes", "123")
@@ -974,11 +964,9 @@ class TestApisixGetResource:
     async def test_get_resource_url_construction(self):
         mock_resp = _mock_response(json_data={"value": {}})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             await apisix_client.get_resource("consumers", "my-consumer")
@@ -991,11 +979,9 @@ class TestApisixGetResource:
         mock_data = {"id": "123", "uri": "/test"}
         mock_resp = _mock_response(json_data=mock_data)
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.get_resource("routes", "123")
@@ -1010,11 +996,9 @@ class TestApisixPutResource:
         body = {"uri": "/new", "upstream_id": "1"}
         mock_resp = _mock_response(json_data={"value": body})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.put.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.put_resource("routes", "r1", body)
@@ -1031,11 +1015,9 @@ class TestApisixPutResource:
         mock_data = {"action": "set", "uri": "/new"}
         mock_resp = _mock_response(json_data=mock_data)
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.put.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.put_resource("routes", "r1", body)
@@ -1049,11 +1031,9 @@ class TestApisixDeleteResource:
     async def test_delete_resource_calls_correct_url(self):
         mock_resp = _mock_response(status_code=200, json_data={})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.delete.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             await apisix_client.delete_resource("routes", "r1")
@@ -1065,11 +1045,9 @@ class TestApisixDeleteResource:
     async def test_delete_resource_returns_none(self):
         mock_resp = _mock_response(status_code=200, json_data={})
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.delete.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             result = await apisix_client.delete_resource("routes", "r1")
@@ -1087,11 +1065,9 @@ class TestApisixErrorHandling:
             request=httpx.Request("GET", "http://test"),
         )
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(httpx.HTTPStatusError):
@@ -1104,11 +1080,9 @@ class TestApisixErrorHandling:
             request=httpx.Request("GET", "http://test"),
         )
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.get.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(httpx.HTTPStatusError):
@@ -1121,11 +1095,9 @@ class TestApisixErrorHandling:
             request=httpx.Request("PUT", "http://test"),
         )
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.put.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(httpx.HTTPStatusError):
@@ -1138,11 +1110,9 @@ class TestApisixErrorHandling:
             request=httpx.Request("DELETE", "http://test"),
         )
 
-        with patch("app.services.apisix_client.httpx.AsyncClient") as MockClient:
+        with patch("app.services.apisix_client._get_client") as MockClient:
             instance = AsyncMock()
             instance.delete.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = instance
 
             with pytest.raises(httpx.HTTPStatusError):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -7,7 +9,9 @@ import pytest
 from fastapi import FastAPI
 
 from app.main import lifespan
-from app.routers.gateway import _SYSTEM_ROUTE_URIS, _route_paths, _shadowed_system_uri
+from app.routers.gateway import _shadowed_system_uri
+from app.services.apisix_client import route_paths
+from app.services.apisix_system_resources import SYSTEM_ROUTE_URIS
 
 # A BIFROST_TEST_VK the /api/llm routes can carry (llm_routes.usable_virtual_key).
 VK = "sk-bf-" + "v" * 32
@@ -32,7 +36,9 @@ class _FakeDb:
         return None
 
 
-async def _fake_get_db():
+@asynccontextmanager
+async def _fake_session():
+    """Stands in for app.main.async_session: every session is an empty _FakeDb."""
     yield _FakeDb()
 
 
@@ -65,7 +71,7 @@ async def test_lifespan_provisions_the_system_routes():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -119,8 +125,8 @@ async def test_lifespan_provisions_the_system_routes():
     # route cannot take one even when the live APISIX listing comes back
     # without the system routes.
     for route_id, body in route_calls.items():
-        for path in _route_paths(body):
-            assert _shadowed_system_uri(path, list(_SYSTEM_ROUTE_URIS)), (route_id, path)
+        for path in route_paths(body):
+            assert _shadowed_system_uri(path, list(SYSTEM_ROUTE_URIS)), (route_id, path)
     for route_id in (
         "query-api", "query-template-write-api", "s3-api", "network-api", "network-write-api"
     ):
@@ -134,6 +140,77 @@ async def test_lifespan_provisions_the_system_routes():
     assert route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is False
 
 
+# What first-boot provisioning sends for the fixed service routes, key order
+# included: scripts/deploy-bluegreen.sh matches the route JSON APISIX hands
+# back, and the bodies are built from a table (apisix_system_resources), so a
+# table edit must not reshape them unnoticed. Written with the internal-proxy
+# secret "proxy-secret" and a 310s query route timeout.
+_PINNED_SERVICE_BODIES = {
+    ("upstreams", "unibridge-service"): '{"name": "unibridge-service", "type": "roundrobin", "nodes": {"unibridge-service:8000": 1}}',
+    ("routes", "query-api"): '{"name": "query-api", "uri": "/api/query/*", "methods": ["POST", "GET"], "upstream_id": "unibridge-service", "timeout": {"connect": 10, "send": 310, "read": 310}, "plugins": {"key-auth": {}, "proxy-rewrite": {"regex_uri": ["^/api/query(.*)", "/query$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "query-template-write-api"): '{"name": "query-template-write-api", "desc": "Create, edit, and delete query templates", "uri": "/api/query/templates/*", "methods": ["PUT", "PATCH", "DELETE"], "priority": 20, "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/query(.*)", "/query$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "s3-api"): '{"name": "s3-api", "uri": "/api/s3/*", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "proxy-rewrite": {"regex_uri": ["^/api/s3(.*)", "/s3$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "nas-api"): '{"name": "nas-api", "uri": "/api/nas/*", "methods": ["GET", "POST"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/nas(.*)", "/nas$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "usages-api"): '{"name": "usages-api", "uri": "/api/usages", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/usages(.*)", "/usages$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "mcp-api"): '{"name": "mcp-api", "desc": "MCP server (Streamable HTTP): query templates, databases, S3, NAS", "uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"], "methods": ["GET", "POST", "DELETE"], "upstream_id": "unibridge-service", "timeout": {"connect": 10, "send": 310, "read": 310}, "plugins": {"key-auth": {"hide_credentials": false}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/mcp(.*)", "/mcp$1"], "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "network-api"): '{"name": "network-api", "desc": "Network map: regions, hosts, firewall openings, port usage, access checks", "uri": "/api/network/*", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/network(.*)", "/network$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "network-write-api"): '{"name": "network-write-api", "desc": "Network map: record regions, hosts, firewall openings and port usage", "uri": "/api/network/*", "methods": ["POST", "PUT", "DELETE"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/network(.*)", "/network$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("upstreams", "prometheus"): '{"name": "prometheus", "type": "roundrobin", "scheme": "http", "nodes": {"prometheus:9090": 1}}',
+    ("routes", "prometheus-api"): '{"name": "prometheus-api", "desc": "Prometheus HTTP API (PromQL queries, read-only) via the gateway", "uri": "/api/prometheus/*", "methods": ["GET", "POST"], "upstream_id": "prometheus", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/prometheus(.*)", "$1"], "use_real_request_uri_unsafe": true}}, "status": 1}',
+}
+
+
+async def test_lifespan_writes_the_fixed_service_routes_exactly_as_pinned():
+    put_resource = AsyncMock()
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.async_session", _fake_session),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.settings_manager.query_route_timeout", 310),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(BIFROST_TEST_VK=VK, APISIX_INTERNAL_PROXY_SECRET="proxy-secret"),
+        ),
+        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch("app.main.api_keys.sync_all_consumer_route_restrictions", new=AsyncMock()),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(FastAPI()):
+            pass
+
+    puts = [call.args for call in put_resource.await_args_list]
+    # The provisioning order: global rules, the service routes behind their
+    # upstreams, then the /api/llm routes and the two explaining 404s.
+    assert [args[:2] for args in puts] == [
+        ("global_rules", "prometheus"),
+        ("global_rules", "unibridge-node-path-prefix"),
+        *_PINNED_SERVICE_BODIES,
+        ("upstreams", "bifrost"),
+        ("upstreams", "llm-converter"),
+        ("routes", "llm-messages"),
+        ("routes", "llm-responses"),
+        ("routes", "llm-models"),
+        ("routes", "llm-proxy"),
+        ("routes", "llm-metrics"),
+        ("routes", "llm-not-found"),
+        ("routes", "llm-bi-not-found"),
+    ]
+    written = {args[:2]: json.dumps(args[2]) for args in puts}
+    for key, expected in _PINNED_SERVICE_BODIES.items():
+        assert written[key] == expected, key
+
+
 async def test_lifespan_uses_configured_apisix_upstream_nodes():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -141,7 +218,7 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -190,7 +267,7 @@ async def test_lifespan_provisions_prometheus_query_route():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -255,7 +332,7 @@ async def test_lifespan_provisions_llm_metrics_route():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -311,7 +388,7 @@ async def test_lifespan_provisions_llm_models_route():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -371,7 +448,7 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -426,7 +503,7 @@ async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -648,7 +725,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -765,7 +842,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -845,7 +922,7 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -890,7 +967,7 @@ async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.async_session", _fake_session),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
@@ -973,7 +1050,8 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
-    async def fake_get_db_sequence():
+    @asynccontextmanager
+    async def fake_session_sequence():
         yield next(db_iter)
 
     async def put_resource(resource_type, resource_id, body):
@@ -999,7 +1077,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     with (
         patch("app.main.validate_settings"),
         patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: fake_get_db_sequence()),
+        patch("app.main.async_session", fake_session_sequence),
         patch("app.main.connection_manager.initialize", new=AsyncMock()),
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),

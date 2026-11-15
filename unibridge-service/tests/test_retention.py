@@ -213,7 +213,7 @@ async def test_loop_waits_before_the_first_run_then_repeats():
         calls += 1
         return {}
 
-    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.retention.run_retention_cleanup", _fake_cleanup):
         with pytest.raises(asyncio.CancelledError):
             await retention.run_retention_loop(interval_seconds=3600, first_delay_seconds=60)
@@ -234,7 +234,7 @@ async def test_loop_survives_a_failing_cycle(caplog):
 
     cleanup = AsyncMock(side_effect=[RuntimeError("db gone"), {}])
 
-    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
          patch("app.services.retention.run_retention_cleanup", cleanup):
         with pytest.raises(asyncio.CancelledError):
             await retention.run_retention_loop()
@@ -255,8 +255,8 @@ async def test_loop_skips_the_sweep_on_the_standby_color():
 
     cleanup = AsyncMock(return_value={})
 
-    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
-         patch("app.services.retention.is_active_instance",
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
+         patch("app.services.active_color.is_active_instance",
                new=AsyncMock(return_value=False)), \
          patch("app.services.retention.run_retention_cleanup", cleanup):
         with pytest.raises(asyncio.CancelledError):
@@ -280,8 +280,8 @@ async def test_loop_starts_sweeping_after_a_promotion_without_a_restart():
     # Standby on the first cycle, promoted before the second.
     active = AsyncMock(side_effect=[False, True])
 
-    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
-         patch("app.services.retention.is_active_instance", new=active), \
+    with patch("app.services.active_color.asyncio.sleep", _fake_sleep), \
+         patch("app.services.active_color.is_active_instance", new=active), \
          patch("app.services.retention.run_retention_cleanup", cleanup):
         with pytest.raises(asyncio.CancelledError):
             await retention.run_retention_loop()

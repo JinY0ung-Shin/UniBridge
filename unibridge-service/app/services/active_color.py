@@ -15,7 +15,9 @@ recreating containers.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from app import metrics
 from app.config import settings
@@ -74,3 +76,30 @@ async def is_active_instance() -> bool:
         _last_logged_active = active
     metrics.set_active_instance(active)
     return active
+
+
+async def run_periodic(
+    once: Callable[[], Awaitable[object]],
+    *,
+    interval_seconds: float,
+    first_delay_seconds: float,
+    on_failure: Callable[[Exception], object],
+) -> None:
+    """Run ``once`` every ``interval_seconds`` on the active color, forever.
+
+    Waits ``first_delay_seconds`` before the first pass. The color is checked
+    on every pass, not once at startup: a promote or rollback rewrites the
+    APISIX upstream without restarting containers, so the work has to be able
+    to move to the other color on the next pass. A failing pass goes to
+    ``on_failure`` (called inside the ``except``, so ``logger.exception``
+    works there) and the loop carries on: the next pass picks the work up.
+    Cancellation stops it.
+    """
+    await asyncio.sleep(first_delay_seconds)
+    while True:
+        try:
+            if await is_active_instance():
+                await once()
+        except Exception as exc:
+            on_failure(exc)
+        await asyncio.sleep(interval_seconds)

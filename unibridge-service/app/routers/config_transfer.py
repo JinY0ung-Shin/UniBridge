@@ -95,6 +95,7 @@ from app.services import apisix_client, network_map, node_path_prefix, server_mo
 from app.services.apisix_system_resources import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
+    SYSTEM_ROUTE_URIS,
     is_system_route,
     is_system_upstream,
 )
@@ -245,24 +246,6 @@ def _json_object(raw: str | None) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def _is_not_found(exc: Exception) -> bool:
-    """Whether an APISIX client error means "this resource does not exist"."""
-    response = getattr(exc, "response", None)
-    if response is not None and getattr(response, "status_code", None) == 404:
-        return True
-    message = str(exc).lower()
-    return "404" in message or "not found" in message
-
-
-async def _get_apisix_resource(resource: str, resource_id: str) -> dict[str, Any] | None:
-    try:
-        return await apisix_client.get_resource(resource, resource_id)
-    except Exception as exc:
-        if _is_not_found(exc):
-            return None
-        raise
 
 
 # ── Export ──────────────────────────────────────────────────────────────────
@@ -867,7 +850,7 @@ async def _apply_upstream(
     body = _apisix_body(item)
     _check_node_path_prefixes(body)
 
-    existing = await _get_apisix_resource("upstreams", upstream_id)
+    existing = await apisix_client.get_resource_or_none("upstreams", upstream_id)
     action = "update" if existing else "create"
     if ctx.dry_run:
         return action, None
@@ -906,17 +889,12 @@ async def _apply_route(
 
     # Same guard as save_route: an import writes straight to APISIX, so without
     # it a config file is a bypass around the system-namespace shadowing check.
-    from app.routers.gateway import (
-        _SYSTEM_ROUTE_URIS,
-        _invalidate_route_listing_cache,
-        _route_paths,
-        _shadowed_system_uri,
-    )
+    from app.routers.gateway import _invalidate_route_listing_cache, _shadowed_system_uri
 
     # Every path counts: APISIX takes a route's paths from ``uris`` when it has
     # several, and an exact path there can outrank a system route by priority.
-    for uri in _route_paths(item):
-        shadowed = _shadowed_system_uri(uri, sorted(_SYSTEM_ROUTE_URIS))
+    for uri in apisix_client.route_paths(item):
+        shadowed = _shadowed_system_uri(uri, sorted(SYSTEM_ROUTE_URIS))
         if shadowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -927,7 +905,7 @@ async def _apply_route(
                 ),
             )
 
-    existing = await _get_apisix_resource("routes", route_id)
+    existing = await apisix_client.get_resource_or_none("routes", route_id)
     action = "update" if existing else "create"
     body = _apisix_body(item)
     # save_route refuses inline upstreams; an import still takes them, so it
