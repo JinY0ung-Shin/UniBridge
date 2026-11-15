@@ -35,7 +35,6 @@ from app.models import (
     PortUsage,
     Region,
     S3Connection,
-    SystemConfig,
 )
 from app.schemas import (
     AccessCheckResponse,
@@ -58,6 +57,7 @@ from app.schemas import (
     RegionResponse,
 )
 from app.services import apisix_client
+from app.services.meta_store import load_config_model, save_config_model
 
 logger = logging.getLogger(__name__)
 
@@ -246,24 +246,17 @@ class Snapshot:
 
 
 async def load_settings(db: AsyncSession) -> NetworkSettings:
-    row = await db.get(SystemConfig, SETTINGS_KEY)
-    if row is None:
-        return NetworkSettings()
-    try:
-        return NetworkSettings.model_validate_json(row.value)
-    except ValueError:
-        logger.warning("Ignoring unreadable %s in system_config", SETTINGS_KEY)
-        return NetworkSettings()
+    return await load_config_model(
+        db,
+        SETTINGS_KEY,
+        NetworkSettings,
+        log=logger,
+        unreadable_message="Ignoring unreadable %s in system_config",
+    )
 
 
 async def save_settings(db: AsyncSession, value: NetworkSettings) -> None:
-    row = await db.get(SystemConfig, SETTINGS_KEY)
-    payload = value.model_dump_json()
-    if row is None:
-        db.add(SystemConfig(key=SETTINGS_KEY, value=payload))
-    else:
-        row.value = payload
-    await db.commit()
+    await save_config_model(db, SETTINGS_KEY, value)
 
 
 async def load_snapshot(db: AsyncSession) -> Snapshot:

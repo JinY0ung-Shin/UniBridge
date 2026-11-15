@@ -1,14 +1,44 @@
+from collections.abc import Callable
 from datetime import datetime
 import json
 from pathlib import PurePosixPath
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from app.services.apisix_system_resources import is_system_route
 from app.services.webhook_security import validate_webhook_url
+
+# Field types shared by the Create/Update request pairs: ``Annotated[T,
+# AfterValidator(helper)]``. The helper runs after the type check and the
+# field's own Field() limits, so min_length/max_length see the value as sent.
+# A ``...OrNone`` type is ``Annotated[T | None, AfterValidator(_skip_none(helper))]``
+# rather than ``Alias | None``: with the latter pydantic applies the field's
+# Field() limits to the helper's result instead of the value as sent.
+
+
+def _skip_none(check: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    def run(value: Any) -> Any:
+        return None if value is None else check(value)
+
+    return run
+
+
+def _strip(value: str) -> str:
+    return value.strip()
+
+
+StrippedStr = Annotated[str, AfterValidator(_strip)]
+StrippedStrOrNone = Annotated[str | None, AfterValidator(_skip_none(_strip))]
 
 
 # ── Query ────────────────────────────────────────────────────────────────────
@@ -79,6 +109,8 @@ def normalize_query_template_path(value: str) -> str:
     return path
 
 
+TemplatePath = Annotated[str, AfterValidator(normalize_query_template_path)]
+
 # A sample is one call's params, not data: far below this in practice.
 QUERY_TEMPLATE_SAMPLE_MAX_BYTES = 16_384
 
@@ -89,9 +121,7 @@ SAMPLE_PARAMS_DESCRIPTION = (
 )
 
 
-def _check_sample_params_size(value: dict[str, Any] | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
+def _check_sample_params_size(value: dict[str, Any]) -> dict[str, Any]:
     try:
         encoded = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
@@ -103,29 +133,22 @@ def _check_sample_params_size(value: dict[str, Any] | None) -> dict[str, Any] | 
     return value
 
 
+SampleParamsOrNone = Annotated[
+    dict[str, Any] | None, AfterValidator(_skip_none(_check_sample_params_size))
+]
+
+
 class QueryTemplateCreate(BaseModel):
-    path: str = Field(..., min_length=1, max_length=200)
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=255)
-    database: str = Field(..., min_length=1, description="Database alias to run the template against")
-    sql: str = Field(..., min_length=1, description="Read-only SQL/Cypher template using named bind parameters")
+    path: TemplatePath = Field(..., min_length=1, max_length=200)
+    name: StrippedStr = Field(..., min_length=1, max_length=100)
+    description: StrippedStr = Field("", max_length=255)
+    database: StrippedStr = Field(..., min_length=1, description="Database alias to run the template against")
+    sql: StrippedStr = Field(..., min_length=1, description="Read-only SQL/Cypher template using named bind parameters")
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool = True
-    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    sample_params: SampleParamsOrNone = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
     monitor_enabled: bool = True
-
-    _sample_size = field_validator("sample_params")(_check_sample_params_size)
-
-    @field_validator("path")
-    @classmethod
-    def validate_path(cls, value: str) -> str:
-        return normalize_query_template_path(value)
-
-    @field_validator("name", "description", "database", "sql")
-    @classmethod
-    def strip_text(cls, value: str) -> str:
-        return value.strip()
 
     @model_validator(mode="after")
     def reject_blank_required_fields(self) -> "QueryTemplateCreate":
@@ -137,23 +160,16 @@ class QueryTemplateCreate(BaseModel):
 
 
 class QueryTemplateUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    description: str | None = Field(None, max_length=255)
-    database: str | None = Field(None, min_length=1)
-    sql: str | None = Field(None, min_length=1)
+    name: StrippedStrOrNone = Field(None, min_length=1, max_length=100)
+    description: StrippedStrOrNone = Field(None, max_length=255)
+    database: StrippedStrOrNone = Field(None, min_length=1)
+    sql: StrippedStrOrNone = Field(None, min_length=1)
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool | None = None
     # Left out = unchanged; null removes the sample.
-    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    sample_params: SampleParamsOrNone = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
     monitor_enabled: bool | None = None
-
-    _sample_size = field_validator("sample_params")(_check_sample_params_size)
-
-    @field_validator("name", "description", "database", "sql")
-    @classmethod
-    def strip_optional_text(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
 
     @model_validator(mode="after")
     def reject_blank_fields(self) -> "QueryTemplateUpdate":
@@ -167,22 +183,15 @@ class QueryTemplateUpdate(BaseModel):
 class QueryTemplateAgentCreate(BaseModel):
     """Fields an API-key agent may set when creating an enabled template."""
 
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=255)
-    database: str = Field(..., min_length=1)
-    sql: str = Field(..., min_length=1)
+    name: StrippedStr = Field(..., min_length=1, max_length=100)
+    description: StrippedStr = Field("", max_length=255)
+    database: StrippedStr = Field(..., min_length=1)
+    sql: StrippedStr = Field(..., min_length=1)
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
-    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    sample_params: SampleParamsOrNone = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
 
     model_config = {"extra": "forbid"}
-
-    _sample_size = field_validator("sample_params")(_check_sample_params_size)
-
-    @field_validator("name", "description", "database", "sql")
-    @classmethod
-    def strip_create_text(cls, value: str) -> str:
-        return value.strip()
 
     @model_validator(mode="after")
     def reject_blank_required_fields(self) -> "QueryTemplateAgentCreate":
@@ -195,22 +204,15 @@ class QueryTemplateAgentCreate(BaseModel):
 class QueryTemplateAgentUpdate(BaseModel):
     """Safe content fields that an API-key agent may edit."""
 
-    sql: str | None = Field(None, min_length=1)
-    description: str | None = Field(None, max_length=255)
+    sql: StrippedStrOrNone = Field(None, min_length=1)
+    description: StrippedStrOrNone = Field(None, max_length=255)
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     # Left out = unchanged; null removes the sample.
-    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    sample_params: SampleParamsOrNone = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
     expected_updated_at: datetime | None = None
 
     model_config = {"extra": "forbid"}
-
-    _sample_size = field_validator("sample_params")(_check_sample_params_size)
-
-    @field_validator("sql", "description")
-    @classmethod
-    def strip_agent_text(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
 
     @model_validator(mode="after")
     def require_edit_field(self) -> "QueryTemplateAgentUpdate":
@@ -407,7 +409,7 @@ class SavedQueryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     database_alias: str | None = Field(None, max_length=100)
     sql_text: str = Field(..., min_length=1, max_length=MAX_SAVED_QUERY_SQL_LENGTH)
-    description: str = Field("", max_length=255)
+    description: StrippedStr = Field("", max_length=255)
 
     @field_validator("name")
     @classmethod
@@ -423,11 +425,6 @@ class SavedQueryCreate(BaseModel):
         if not value.strip():
             raise ValueError("sql_text must not be empty")
         return value
-
-    @field_validator("description")
-    @classmethod
-    def strip_description(cls, value: str) -> str:
-        return value.strip()
 
 
 class SavedQueryResponse(BaseModel):
@@ -526,14 +523,9 @@ class McpToolGroups(BaseModel):
 class McpExposedRoute(BaseModel):
     """A gateway route offered through search_apis/call_api."""
 
-    route_id: str = Field(..., min_length=1, max_length=64)
+    route_id: StrippedStr = Field(..., min_length=1, max_length=64)
     # Shown to the model; empty falls back to the route's own desc.
-    description: str = Field("", max_length=4_000)
-
-    @field_validator("route_id", "description")
-    @classmethod
-    def strip_text(cls, value: str) -> str:
-        return value.strip()
+    description: StrippedStr = Field("", max_length=4_000)
 
 
 class McpSettings(BaseModel):
@@ -683,13 +675,8 @@ _MCP_REMOTE_GATEWAY_HEADERS = frozenset(
 class McpRemoteHeader(BaseModel):
     """A header sent to the external server; reads show the value masked."""
 
-    name: str
+    name: Annotated[str, AfterValidator(_mcp_remote_header_name)]
     value: str = Field("", max_length=4_096)
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return _mcp_remote_header_name(value)
 
     @field_validator("value")
     @classmethod
@@ -982,11 +969,28 @@ class ToggleEnabledRequest(BaseModel):
 
 # ── Alerts ──────────────────────────────────────────────────────────────────
 
-def _validate_webhook_url(url: str) -> str:
-    return validate_webhook_url(url)
+WebhookUrl = Annotated[str, AfterValidator(validate_webhook_url)]
+WebhookUrlOrNone = Annotated[str | None, AfterValidator(_skip_none(validate_webhook_url))]
 
 
-def _validate_s3_endpoint_url(url: str) -> str:
+def _dedupe_emails(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    emails: list[str] = []
+    for value in values:
+        email = value.strip()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        emails.append(email)
+    return emails
+
+
+EmailListOrNone = Annotated[list[str] | None, AfterValidator(_skip_none(_dedupe_emails))]
+
+
+def _validate_s3_endpoint_url(url: str) -> str | None:
+    if not url.strip():
+        return None  # blank = no custom endpoint
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("endpoint_url must use http or https scheme")
@@ -995,17 +999,17 @@ def _validate_s3_endpoint_url(url: str) -> str:
     return url
 
 
+S3EndpointUrlOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_s3_endpoint_url))]
+
 MAX_ALLOWED_BUCKETS = 100
 MAX_BUCKET_NAME_LENGTH = 255
 
 
-def _normalize_allowed_buckets(buckets: list[str] | None) -> list[str] | None:
+def _normalize_allowed_buckets(buckets: list[str]) -> list[str] | None:
     """Strip, drop blanks and dedupe an S3 bucket allow-list, preserving order.
 
     An empty result normalizes to ``None``, which means "all buckets allowed".
     """
-    if buckets is None:
-        return None
     if len(buckets) > MAX_ALLOWED_BUCKETS:
         raise ValueError(f"allowed_buckets must not contain more than {MAX_ALLOWED_BUCKETS} entries")
 
@@ -1023,6 +1027,11 @@ def _normalize_allowed_buckets(buckets: list[str] | None) -> list[str] | None:
             seen.add(bucket)
             normalized.append(bucket)
     return normalized or None
+
+
+BucketListOrNone = Annotated[
+    list[str] | None, AfterValidator(_skip_none(_normalize_allowed_buckets))
+]
 
 
 def _validate_nas_base_path(path: str) -> str:
@@ -1061,34 +1070,26 @@ def _validate_nas_base_path(path: str) -> str:
     raise ValueError("base_path is not under an allowed NAS root")
 
 
+NasBasePath = Annotated[str, AfterValidator(_validate_nas_base_path)]
+NasBasePathOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_nas_base_path))]
+
+
 class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    webhook_url: str = Field(..., min_length=1)
+    webhook_url: WebhookUrl = Field(..., min_length=1)
     payload_template: str = Field(..., min_length=1)
     recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool = True
 
-    @field_validator("webhook_url")
-    @classmethod
-    def check_webhook_url(cls, v: str) -> str:
-        return _validate_webhook_url(v)
-
 
 class AlertChannelUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
-    webhook_url: str | None = Field(None, min_length=1)
+    webhook_url: WebhookUrlOrNone = Field(None, min_length=1)
     payload_template: str | None = None
     recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool | None = None
-
-    @field_validator("webhook_url")
-    @classmethod
-    def check_webhook_url(cls, v: str | None) -> str | None:
-        if v is not None:
-            return _validate_webhook_url(v)
-        return v
 
 
 class AlertChannelResponse(BaseModel):
@@ -1128,7 +1129,8 @@ class AlertSettingsResponse(BaseModel):
 
 class AlertSettingsUpdate(BaseModel):
     mail_channel_id: int | None = None
-    admin_emails: list[str] | None = None
+    # Admins are optional (empty list is valid: no global admins configured).
+    admin_emails: EmailListOrNone = None
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
     route_error_min_requests: int | None = Field(None, ge=0, le=1_000_000)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
@@ -1149,12 +1151,6 @@ class AlertSettingsUpdate(BaseModel):
     repeat_alert_after_cycles: int | None = Field(None, ge=0, le=1000)
     # Minutes between runs of the query template samples; 0 switches them off.
     template_check_interval_minutes: int | None = Field(None, ge=0, le=10080)
-
-    @field_validator("admin_emails")
-    @classmethod
-    def validate_admin_emails(cls, v: list[str] | None) -> list[str] | None:
-        # Admins are optional (empty list is valid: no global admins configured).
-        return _dedupe_emails(v) if v is not None else None
 
     @model_validator(mode="after")
     def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
@@ -1206,28 +1202,11 @@ class AlertDeliveryTestResponse(BaseModel):
     error: str | None = None
 
 
-def _dedupe_emails(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    emails: list[str] = []
-    for value in values:
-        email = value.strip()
-        if not email or email in seen:
-            continue
-        seen.add(email)
-        emails.append(email)
-    return emails
-
-
 class ResourceOwnerUpsert(BaseModel):
     """Assign 담당자 emails and notification state to a resource."""
 
-    emails: list[str] | None = None
+    emails: EmailListOrNone = None
     alerts_enabled: bool | None = None
-
-    @field_validator("emails")
-    @classmethod
-    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
-        return _dedupe_emails(v) if v is not None else None
 
 
 class ResourceOwnerResponse(BaseModel):
@@ -1350,6 +1329,10 @@ def _validate_host_name(name: str) -> str:
     return name
 
 
+HostName = Annotated[str, AfterValidator(_validate_host_name)]
+HostNameOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_host_name))]
+
+
 # The host part of a scrape address: a DNS name / IPv4 address, or a bracketed
 # IPv6 literal. Anything else -- a scheme, a path, credentials, whitespace --
 # makes Prometheus drop the target ("address ... contains /" etc.), so the host
@@ -1378,20 +1361,25 @@ def _validate_host_address(address: str) -> str:
     return address
 
 
-def _normalize_gpu_address(value: str | None) -> str | None:
+HostAddress = Annotated[str, AfterValidator(_validate_host_address)]
+HostAddressOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_host_address))]
+
+
+def _normalize_gpu_address(value: str) -> str | None:
     """Validate an optional dcgm-exporter endpoint.
 
     GPU monitoring is off when unset, so an empty/whitespace string collapses to
     None rather than failing validation — that is how the UI clears it.
     """
-    if value is None or not value.strip():
+    if not value.strip():
         return None
     return _validate_host_address(value)
 
 
-def _normalize_disk_mountpoints(value: str | None) -> str | None:
-    if value is None:
-        return None
+GpuAddressOrNone = Annotated[str | None, AfterValidator(_skip_none(_normalize_gpu_address))]
+
+
+def _normalize_disk_mountpoints(value: str) -> str | None:
     if "\x00" in value:
         raise ValueError("disk_mountpoints must not contain a NUL byte")
 
@@ -1415,6 +1403,11 @@ def _normalize_disk_mountpoints(value: str | None) -> str | None:
     return ",".join(mounts) if mounts else None
 
 
+DiskMountpointsOrNone = Annotated[
+    str | None, AfterValidator(_skip_none(_normalize_disk_mountpoints))
+]
+
+
 # Prometheus label names (no leading "__": those are Prometheus' own).
 _LABEL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Labels the scrape job or the monitoring queries depend on. A file_sd target
@@ -1436,9 +1429,7 @@ def host_label_allowed(key: str) -> bool:
     )
 
 
-def _validate_host_labels(value: dict[str, str] | None) -> dict[str, str] | None:
-    if value is None:
-        return None
+def _validate_host_labels(value: dict[str, str]) -> dict[str, str]:
     for key in value:
         if not _LABEL_NAME_RE.fullmatch(key) or key.startswith("__"):
             raise ValueError(
@@ -1450,14 +1441,19 @@ def _validate_host_labels(value: dict[str, str] | None) -> dict[str, str] | None
     return value
 
 
+HostLabelsOrNone = Annotated[
+    dict[str, str] | None, AfterValidator(_skip_none(_validate_host_labels))
+]
+
+
 class MonitoredHostCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    address: str = Field(..., min_length=1, max_length=255)
+    name: HostName = Field(..., min_length=1, max_length=100)
+    address: HostAddress = Field(..., min_length=1, max_length=255)
     enabled: bool = True
     description: str = Field("", max_length=255)
-    labels: dict[str, str] | None = None
-    disk_mountpoints: str | None = Field(None, max_length=1000)
-    gpu_address: str | None = Field(None, max_length=255)
+    labels: HostLabelsOrNone = None
+    disk_mountpoints: DiskMountpointsOrNone = Field(None, max_length=1000)
+    gpu_address: GpuAddressOrNone = Field(None, max_length=255)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -1465,31 +1461,6 @@ class MonitoredHostCreate(BaseModel):
     gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str) -> str:
-        return _validate_host_name(v)
-
-    @field_validator("address")
-    @classmethod
-    def check_address(cls, v: str) -> str:
-        return _validate_host_address(v)
-
-    @field_validator("labels")
-    @classmethod
-    def check_labels(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        return _validate_host_labels(v)
-
-    @field_validator("gpu_address")
-    @classmethod
-    def check_gpu_address(cls, v: str | None) -> str | None:
-        return _normalize_gpu_address(v)
-
-    @field_validator("disk_mountpoints")
-    @classmethod
-    def check_disk_mountpoints(cls, v: str | None) -> str | None:
-        return _normalize_disk_mountpoints(v)
 
     @model_validator(mode="after")
     def validate_disk_threshold_order(self) -> "MonitoredHostCreate":
@@ -1498,12 +1469,12 @@ class MonitoredHostCreate(BaseModel):
 
 
 class MonitoredHostUpdate(BaseModel):
-    address: str | None = Field(None, min_length=1, max_length=255)
+    address: HostAddressOrNone = Field(None, min_length=1, max_length=255)
     enabled: bool | None = None
     description: str | None = Field(None, max_length=255)
-    labels: dict[str, str] | None = None
-    disk_mountpoints: str | None = Field(None, max_length=1000)
-    gpu_address: str | None = Field(None, max_length=255)
+    labels: HostLabelsOrNone = None
+    disk_mountpoints: DiskMountpointsOrNone = Field(None, max_length=1000)
+    gpu_address: GpuAddressOrNone = Field(None, max_length=255)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -1511,26 +1482,6 @@ class MonitoredHostUpdate(BaseModel):
     gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
-
-    @field_validator("address")
-    @classmethod
-    def check_address(cls, v: str | None) -> str | None:
-        return _validate_host_address(v) if v is not None else v
-
-    @field_validator("labels")
-    @classmethod
-    def check_labels(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        return _validate_host_labels(v)
-
-    @field_validator("gpu_address")
-    @classmethod
-    def check_gpu_address(cls, v: str | None) -> str | None:
-        return _normalize_gpu_address(v)
-
-    @field_validator("disk_mountpoints")
-    @classmethod
-    def check_disk_mountpoints(cls, v: str | None) -> str | None:
-        return _normalize_disk_mountpoints(v)
 
     @model_validator(mode="after")
     def validate_disk_threshold_order(self) -> "MonitoredHostUpdate":
@@ -1594,6 +1545,10 @@ def _validate_metrics_path(path: str) -> str:
     return path
 
 
+MetricsPath = Annotated[str, AfterValidator(_validate_metrics_path)]
+MetricsPathOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_metrics_path))]
+
+
 def _validate_scheme(scheme: str) -> str:
     scheme = scheme.strip().lower()
     if scheme not in ("http", "https"):
@@ -1601,64 +1556,28 @@ def _validate_scheme(scheme: str) -> str:
     return scheme
 
 
+UrlScheme = Annotated[str, AfterValidator(_validate_scheme)]
+UrlSchemeOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_scheme))]
+
+
 class MonitoredServiceCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    address: str = Field(..., min_length=1, max_length=255)
-    metrics_path: str = Field("/metrics", min_length=1, max_length=255)
-    scheme: str = Field("http")
+    # Slug-safe: same charset as monitored hosts (used as the Prometheus
+    # `service` label value, so it must be safe inside a PromQL selector).
+    name: HostName = Field(..., min_length=1, max_length=100)
+    address: HostAddress = Field(..., min_length=1, max_length=255)
+    metrics_path: MetricsPath = Field("/metrics", min_length=1, max_length=255)
+    scheme: UrlScheme = Field("http")
     description: str = Field("", max_length=255)
     enabled: bool = True
 
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str) -> str:
-        # Slug-safe: same charset as monitored hosts (used as the Prometheus
-        # `service` label value, so it must be safe inside a PromQL selector).
-        return _validate_host_name(v)
-
-    @field_validator("address")
-    @classmethod
-    def check_address(cls, v: str) -> str:
-        return _validate_host_address(v)
-
-    @field_validator("metrics_path")
-    @classmethod
-    def check_metrics_path(cls, v: str) -> str:
-        return _validate_metrics_path(v)
-
-    @field_validator("scheme")
-    @classmethod
-    def check_scheme(cls, v: str) -> str:
-        return _validate_scheme(v)
-
 
 class MonitoredServiceUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    address: str | None = Field(None, min_length=1, max_length=255)
-    metrics_path: str | None = Field(None, min_length=1, max_length=255)
-    scheme: str | None = None
+    name: HostNameOrNone = Field(None, min_length=1, max_length=100)
+    address: HostAddressOrNone = Field(None, min_length=1, max_length=255)
+    metrics_path: MetricsPathOrNone = Field(None, min_length=1, max_length=255)
+    scheme: UrlSchemeOrNone = None
     description: str | None = Field(None, max_length=255)
     enabled: bool | None = None
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str | None) -> str | None:
-        return _validate_host_name(v) if v is not None else v
-
-    @field_validator("address")
-    @classmethod
-    def check_address(cls, v: str | None) -> str | None:
-        return _validate_host_address(v) if v is not None else v
-
-    @field_validator("metrics_path")
-    @classmethod
-    def check_metrics_path(cls, v: str | None) -> str | None:
-        return _validate_metrics_path(v) if v is not None else v
-
-    @field_validator("scheme")
-    @classmethod
-    def check_scheme(cls, v: str | None) -> str | None:
-        return _validate_scheme(v) if v is not None else v
 
 
 class MonitoredServiceResponse(BaseModel):
@@ -1677,51 +1596,27 @@ class MonitoredServiceResponse(BaseModel):
 
 class S3ConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
-    endpoint_url: str | None = Field(None, description="Custom endpoint for S3-compatible storage (MinIO, R2, etc.)")
+    endpoint_url: S3EndpointUrlOrNone = Field(None, description="Custom endpoint for S3-compatible storage (MinIO, R2, etc.)")
     region: str = Field("us-east-1", min_length=1, max_length=100)
     access_key_id: str = Field(..., min_length=1)
     secret_access_key: str = Field(..., min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
-    allowed_buckets: list[str] | None = Field(
+    allowed_buckets: BucketListOrNone = Field(
         None, description="Bucket whitelist for browsing; null = all buckets"
     )
     use_ssl: bool = True
 
-    @field_validator("endpoint_url")
-    @classmethod
-    def check_endpoint_url(cls, v: str | None) -> str | None:
-        if v is not None and v.strip():
-            return _validate_s3_endpoint_url(v)
-        return None
-
-    @field_validator("allowed_buckets")
-    @classmethod
-    def check_allowed_buckets(cls, v: list[str] | None) -> list[str] | None:
-        return _normalize_allowed_buckets(v)
-
 
 class S3ConnectionUpdate(BaseModel):
-    endpoint_url: str | None = None
+    endpoint_url: S3EndpointUrlOrNone = None
     region: str | None = Field(None, min_length=1, max_length=100)
     access_key_id: str | None = Field(None, min_length=1)
     secret_access_key: str | None = Field(None, min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
-    allowed_buckets: list[str] | None = Field(
+    allowed_buckets: BucketListOrNone = Field(
         None, description="Bucket whitelist; explicit null clears the restriction"
     )
     use_ssl: bool | None = None
-
-    @field_validator("endpoint_url")
-    @classmethod
-    def check_endpoint_url(cls, v: str | None) -> str | None:
-        if v is not None and v.strip():
-            return _validate_s3_endpoint_url(v)
-        return None
-
-    @field_validator("allowed_buckets")
-    @classmethod
-    def check_allowed_buckets(cls, v: list[str] | None) -> list[str] | None:
-        return _normalize_allowed_buckets(v)
 
 
 class S3ConnectionResponse(BaseModel):
@@ -1749,16 +1644,11 @@ class S3ConnectionResponse(BaseModel):
 
 class NasConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
-    base_path: str = Field(..., min_length=1)
+    base_path: NasBasePath = Field(..., min_length=1)
     read_only: bool = True
     max_download_bytes: int | None = Field(None, ge=1)
     show_hidden: bool = False
     follow_symlinks: bool = False
-
-    @field_validator("base_path")
-    @classmethod
-    def check_base_path(cls, v: str) -> str:
-        return _validate_nas_base_path(v)
 
     @field_validator("read_only")
     @classmethod
@@ -1769,16 +1659,11 @@ class NasConnectionCreate(BaseModel):
 
 
 class NasConnectionUpdate(BaseModel):
-    base_path: str | None = Field(None, min_length=1)
+    base_path: NasBasePathOrNone = Field(None, min_length=1)
     max_download_bytes: int | None = Field(None, ge=1)
     show_hidden: bool | None = None
     follow_symlinks: bool | None = None
     # read_only is intentionally NOT updatable (always True)
-
-    @field_validator("base_path")
-    @classmethod
-    def check_base_path(cls, v: str | None) -> str | None:
-        return _validate_nas_base_path(v) if v is not None else None
 
 
 class NasConnectionResponse(BaseModel):
@@ -1857,6 +1742,10 @@ def _validate_region_name(name: str) -> str:
     return name
 
 
+RegionName = Annotated[str, AfterValidator(_validate_region_name)]
+RegionNameOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_region_name))]
+
+
 def _validate_cidr(value: str) -> str:
     import ipaddress
 
@@ -1866,15 +1755,20 @@ def _validate_cidr(value: str) -> str:
         raise ValueError(f"invalid CIDR: {value!r}") from exc
 
 
-def _validate_cidrs(values: list[str] | None) -> list[str] | None:
-    if values is None:
-        return None
+CidrOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_cidr))]
+
+
+def _validate_cidrs(values: list[str]) -> list[str]:
     out: list[str] = []
     for value in values:
         cidr = _validate_cidr(value)
         if cidr not in out:
             out.append(cidr)
     return out
+
+
+CidrList = Annotated[list[str], AfterValidator(_validate_cidrs)]
+CidrListOrNone = Annotated[list[str] | None, AfterValidator(_skip_none(_validate_cidrs))]
 
 
 def _validate_ip(value: str) -> str:
@@ -1886,6 +1780,10 @@ def _validate_ip(value: str) -> str:
         raise ValueError(f"ip must be an IPv4 or IPv6 address, got {value!r}") from exc
 
 
+IpAddress = Annotated[str, AfterValidator(_validate_ip)]
+IpAddressOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_ip))]
+
+
 def _exactly_one(model: BaseModel, fields: tuple[str, ...], what: str, *, required: bool) -> None:
     given = [f for f in fields if getattr(model, f) is not None]
     if len(given) > 1:
@@ -1895,35 +1793,15 @@ def _exactly_one(model: BaseModel, fields: tuple[str, ...], what: str, *, requir
 
 
 class RegionCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=64)
+    name: RegionName = Field(..., min_length=1, max_length=64)
     description: str = Field("", max_length=255)
-    cidrs: list[str] = Field(default_factory=list, max_length=200)
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str) -> str:
-        return _validate_region_name(v)
-
-    @field_validator("cidrs")
-    @classmethod
-    def check_cidrs(cls, v: list[str]) -> list[str]:
-        return _validate_cidrs(v) or []
+    cidrs: CidrList = Field(default_factory=list, max_length=200)
 
 
 class RegionUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=64)
+    name: RegionNameOrNone = Field(None, min_length=1, max_length=64)
     description: str | None = Field(None, max_length=255)
-    cidrs: list[str] | None = Field(None, max_length=200)
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str | None) -> str | None:
-        return _validate_region_name(v) if v is not None else None
-
-    @field_validator("cidrs")
-    @classmethod
-    def check_cidrs(cls, v: list[str] | None) -> list[str] | None:
-        return _validate_cidrs(v)
+    cidrs: CidrListOrNone = Field(None, max_length=200)
 
 
 class RegionResponse(BaseModel):
@@ -1947,6 +1825,12 @@ def _validate_network_host_name(name: str) -> str:
     raise ValueError("a host name must not be an IP address (put the address in ip)")
 
 
+NetworkHostName = Annotated[str, AfterValidator(_validate_network_host_name)]
+NetworkHostNameOrNone = Annotated[
+    str | None, AfterValidator(_skip_none(_validate_network_host_name))
+]
+
+
 def _check_external_host(model: BaseModel) -> None:
     if getattr(model, "region_id") is not None or getattr(model, "region") is not None:
         raise ValueError(
@@ -1957,8 +1841,8 @@ def _check_external_host(model: BaseModel) -> None:
 
 
 class NetworkHostCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    ip: str = Field(..., min_length=1, max_length=64)
+    name: NetworkHostName = Field(..., min_length=1, max_length=100)
+    ip: IpAddress = Field(..., min_length=1, max_length=64)
     # Region by id or by name; neither = placed by the regions' CIDRs (or unassigned).
     region_id: int | None = None
     region: str | None = Field(None, max_length=64)
@@ -1966,16 +1850,6 @@ class NetworkHostCreate(BaseModel):
     owner: str = Field("", max_length=255)
     monitored_host_id: int | None = None
     kind: NetworkHostKind = "managed"
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str) -> str:
-        return _validate_network_host_name(v)
-
-    @field_validator("ip")
-    @classmethod
-    def check_ip(cls, v: str) -> str:
-        return _validate_ip(v)
 
     @model_validator(mode="after")
     def one_region(self) -> "NetworkHostCreate":
@@ -1986,8 +1860,8 @@ class NetworkHostCreate(BaseModel):
 
 
 class NetworkHostUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    ip: str | None = Field(None, min_length=1, max_length=64)
+    name: NetworkHostNameOrNone = Field(None, min_length=1, max_length=100)
+    ip: IpAddressOrNone = Field(None, min_length=1, max_length=64)
     # Explicit null region_id unassigns the host.
     region_id: int | None = None
     region: str | None = Field(None, max_length=64)
@@ -1996,16 +1870,6 @@ class NetworkHostUpdate(BaseModel):
     monitored_host_id: int | None = None
     # Switching to external takes the host out of its region.
     kind: NetworkHostKind | None = None
-
-    @field_validator("name")
-    @classmethod
-    def check_name(cls, v: str | None) -> str | None:
-        return _validate_network_host_name(v) if v is not None else None
-
-    @field_validator("ip")
-    @classmethod
-    def check_ip(cls, v: str | None) -> str | None:
-        return _validate_ip(v) if v is not None else None
 
     @model_validator(mode="after")
     def one_region(self) -> "NetworkHostUpdate":
@@ -2039,7 +1903,7 @@ class FirewallOpeningCreate(BaseModel):
     # Source: a registered host (id, or name/IP) or a CIDR.
     src_host_id: int | None = None
     src_host: str | None = Field(None, min_length=1, max_length=100)
-    src_cidr: str | None = Field(None, max_length=64)
+    src_cidr: CidrOrNone = Field(None, max_length=64)
     # Destination: a registered host (id, or name/IP).
     dst_host_id: int | None = None
     dst_host: str | None = Field(None, min_length=1, max_length=100)
@@ -2053,11 +1917,6 @@ class FirewallOpeningCreate(BaseModel):
     ticket_no: str = Field("", max_length=100)
     requester: str = Field("", max_length=100)
     purpose: str = Field("", max_length=500)
-
-    @field_validator("src_cidr")
-    @classmethod
-    def check_cidr(cls, v: str | None) -> str | None:
-        return _validate_cidr(v) if v is not None else None
 
     @model_validator(mode="after")
     def check_refs(self) -> "FirewallOpeningCreate":
@@ -2073,7 +1932,7 @@ class FirewallOpeningCreate(BaseModel):
 class FirewallOpeningUpdate(BaseModel):
     src_host_id: int | None = None
     src_host: str | None = Field(None, min_length=1, max_length=100)
-    src_cidr: str | None = Field(None, max_length=64)
+    src_cidr: CidrOrNone = Field(None, max_length=64)
     dst_host_id: int | None = None
     dst_host: str | None = Field(None, min_length=1, max_length=100)
     port_from: int | None = Field(None, ge=1, le=65535)
@@ -2083,11 +1942,6 @@ class FirewallOpeningUpdate(BaseModel):
     ticket_no: str | None = Field(None, max_length=100)
     requester: str | None = Field(None, max_length=100)
     purpose: str | None = Field(None, max_length=500)
-
-    @field_validator("src_cidr")
-    @classmethod
-    def check_cidr(cls, v: str | None) -> str | None:
-        return _validate_cidr(v) if v is not None else None
 
     @model_validator(mode="after")
     def check_refs(self) -> "FirewallOpeningUpdate":
@@ -2130,22 +1984,25 @@ class FirewallOpeningResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+def _validate_service_name(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("service_name must not be blank")
+    return value
+
+
+ServiceName = Annotated[str, AfterValidator(_validate_service_name)]
+ServiceNameOrNone = Annotated[str | None, AfterValidator(_skip_none(_validate_service_name))]
+
+
 class PortUsageCreate(BaseModel):
     host_id: int | None = None
     host: str | None = Field(None, min_length=1, max_length=100)
     port: int = Field(..., ge=1, le=65535)
     protocol: NetworkProtocol = "tcp"
-    service_name: str = Field(..., min_length=1, max_length=100)
+    service_name: ServiceName = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=255)
     owner: str = Field("", max_length=255)
-
-    @field_validator("service_name")
-    @classmethod
-    def strip_service(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("service_name must not be blank")
-        return v
 
     @model_validator(mode="after")
     def one_host(self) -> "PortUsageCreate":
@@ -2156,19 +2013,9 @@ class PortUsageCreate(BaseModel):
 class PortUsageUpdate(BaseModel):
     port: int | None = Field(None, ge=1, le=65535)
     protocol: NetworkProtocol | None = None
-    service_name: str | None = Field(None, min_length=1, max_length=100)
+    service_name: ServiceNameOrNone = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, max_length=255)
     owner: str | None = Field(None, max_length=255)
-
-    @field_validator("service_name")
-    @classmethod
-    def strip_service(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = v.strip()
-        if not v:
-            raise ValueError("service_name must not be blank")
-        return v
 
 
 class PortUsageResponse(BaseModel):

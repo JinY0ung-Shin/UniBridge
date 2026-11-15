@@ -213,7 +213,7 @@ async def _require_nas_browse(
     """Allow access via API key (APISIX consumer-restriction enforces route access)
     or JWT with nas.browse permission."""
     if isinstance(user, ApiKeyUser):
-        if "*" not in user.allowed_databases and alias not in user.allowed_databases:
+        if not user.has_alias(alias):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key '{user.consumer_name}' is not allowed to access NAS alias '{alias}'",

@@ -53,6 +53,7 @@ from app.schemas import (
 from app.services import mcp_artifacts, mcp_remote, mcp_tools
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action, mask_secret
+from app.services.capped_read import read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def _require_mcp_key(
             detail="The MCP endpoint takes an API key (apikey header via /api/mcp)",
         )
     # APISIX enforces the grant at the edge; repeat it for direct internal calls.
-    if not mcp_tools.has_route(user, MCP_API_ROUTE_ID):
+    if not user.has_route(MCP_API_ROUTE_ID):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Required API key route: {MCP_API_ROUTE_ID}",
@@ -289,7 +290,7 @@ async def stage_artifact(
     await db.rollback()
     try:
         with mcp_artifacts.transfer_slot(user.consumer_name, limits):
-            content = await mcp_artifacts.collect(request.stream(), limits.max_bytes)
+            content = await read_capped(request.stream(), limits.max_bytes)
             if content is None:
                 raise mcp_artifacts.too_large(limits)
             if await mcp_artifacts.sha256_hex(content) != declared:
@@ -455,12 +456,12 @@ async def preview_mcp_tools(
     return McpPreview(
         consumer=consumer,
         mcp_enabled=mcp_settings.enabled,
-        has_mcp_grant=mcp_tools.has_route(user, MCP_API_ROUTE_ID),
+        has_mcp_grant=user.has_route(MCP_API_ROUTE_ID),
         groups=[
             McpPreviewGroup(
                 group=group,
                 enabled=getattr(mcp_settings.tool_groups, group),
-                granted=mcp_tools.has_route(user, route_id),
+                granted=user.has_route(route_id),
                 required_route=route_id,
             )
             for group, route_id in mcp_tools.GROUP_ROUTES.items()
@@ -486,7 +487,7 @@ async def preview_mcp_tools(
             McpPreviewGroup(
                 group="external",
                 enabled=mcp_settings.tool_groups.external and server.enabled,
-                granted=mcp_tools.has_route(user, mcp_remote.route_id(server.name)),
+                granted=user.has_route(mcp_remote.route_id(server.name)),
                 required_route=mcp_remote.route_id(server.name),
                 server=server.name,
             )

@@ -139,6 +139,14 @@ class ApiKeyUser:
     allow_delete: bool = False
     allowed_tables: list[str] | None = None  # None = all tables
 
+    def has_route(self, route_id: str) -> bool:
+        """The key is granted ``route_id``, directly or through "*"."""
+        return "*" in self.allowed_routes or route_id in self.allowed_routes
+
+    def has_alias(self, alias: str) -> bool:
+        """The key may use the DB/S3/NAS alias ``alias``, directly or through "*"."""
+        return "*" in self.allowed_databases or alias in self.allowed_databases
+
 
 def create_token(username: str, role: str, expires_delta: timedelta | None = None) -> str:
     """Create a JWT token for the given user and role (dev/testing only)."""
@@ -171,8 +179,7 @@ async def _get_jwks() -> dict:
         # Double-check after acquiring lock
         if _jwks_cache and (time.time() - _jwks_cache_ts < _JWKS_CACHE_TTL):
             return _jwks_cache
-        ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
-        async with httpx.AsyncClient(timeout=10.0, verify=ssl_verify) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=settings.httpx_verify) as client:
             try:
                 resp = await client.get(settings.KEYCLOAK_JWKS_URL)
                 resp.raise_for_status()

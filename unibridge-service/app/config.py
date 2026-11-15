@@ -226,6 +226,12 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env"}
 
+    @property
+    def httpx_verify(self) -> str | bool:
+        """``verify=`` for outgoing httpx clients: the CA bundle when one is set,
+        otherwise SSL_VERIFY."""
+        return self.SSL_CA_CERT_PATH or self.SSL_VERIFY
+
     @model_validator(mode="after")
     def _derive_urls(self) -> "Settings":
         """Fill in URL fields that weren't explicitly set.

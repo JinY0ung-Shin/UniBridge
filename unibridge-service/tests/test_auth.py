@@ -1129,3 +1129,33 @@ async def test_apikey_user_unknown_consumer_returns_401():
             request=mock_request, credentials=None, db=mock_db
         )
     assert exc_info.value.status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# auth.py — API key grants and the outgoing-TLS setting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_api_key_grants_follow_the_lists_and_the_wildcard():
+    from app.auth import ApiKeyUser
+
+    scoped = ApiKeyUser(consumer_name="k", allowed_databases=["db1"], allowed_routes=["r1"])
+    assert scoped.has_route("r1") and not scoped.has_route("r2")
+    assert scoped.has_alias("db1") and not scoped.has_alias("db2")
+    # Routes and aliases are separate lists: one never grants the other.
+    assert not scoped.has_alias("r1") and not scoped.has_route("db1")
+
+    master = ApiKeyUser(consumer_name="m", allowed_databases=["*"], allowed_routes=["*"])
+    assert master.has_route("anything") and master.has_alias("anything")
+    none = ApiKeyUser(consumer_name="n", allowed_databases=[], allowed_routes=[])
+    assert not none.has_route("r1") and not none.has_alias("db1")
+
+
+def test_httpx_verify_prefers_the_ca_bundle(monkeypatch):
+    monkeypatch.setattr(settings, "SSL_CA_CERT_PATH", "")
+    monkeypatch.setattr(settings, "SSL_VERIFY", True)
+    assert settings.httpx_verify is True
+    monkeypatch.setattr(settings, "SSL_VERIFY", False)
+    assert settings.httpx_verify is False
+    monkeypatch.setattr(settings, "SSL_CA_CERT_PATH", "/certs/ca.pem")
+    assert settings.httpx_verify == "/certs/ca.pem"
