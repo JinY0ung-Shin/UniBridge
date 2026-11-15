@@ -35,6 +35,7 @@ from app.schemas import (
     AlertSettingsResponse, AlertSettingsUpdate,
 )
 from app.services import alert_mutes, apisix_client
+from app.services.alert_owner_dispatcher import ASSIGNEE_RESOURCE_TYPES
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.audit import log_admin_action
 from app.services.webhook_security import mask_webhook_url
@@ -44,13 +45,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
 
 
-RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
+# Assignable resources (ASSIGNEE_RESOURCE_TYPES) registered in the meta DB:
+# type → the column holding a resource's id, which is also its display name.
+# The boot stale-state purge reads what still exists from it too (main.py).
+# The rest live in APISIX (APISIX_RESOURCE_TYPES: type → APISIX resource).
+RESOURCE_ID_COLUMNS = {
+    "db": DBConnection.alias,
+    "s3": S3Connection.alias,
+    "nas": NASConnection.alias,
+    "server": MonitoredHost.name,
+    "service": MonitoredService.name,
+}
 APISIX_RESOURCE_TYPES = {
     "route": "routes",
 }
 
 
 def _parse_emails(emails_json: str | None) -> list[str]:
+    """Stored email list for display: anything malformed reads as no entries.
+
+    Lenient on purpose, unlike the dispatcher's ``_parse_emails_strict``.
+    """
     if not emails_json:
         return []
     try:
@@ -176,7 +191,7 @@ def _channel_audit_snapshot(ch: AlertChannel) -> dict[str, Any]:
 
 
 def _validate_resource_type(resource_type: str) -> None:
-    if resource_type not in RESOURCE_TYPES:
+    if resource_type not in ASSIGNEE_RESOURCE_TYPES:
         raise HTTPException(status_code=422, detail="Unsupported resource type")
 
 
@@ -203,20 +218,9 @@ async def _resource_display_name(
     resource_id: str,
 ) -> str | None:
     _validate_resource_type(resource_type)
-    if resource_type == "db":
-        result = await db.execute(select(DBConnection.alias).where(DBConnection.alias == resource_id))
-        return result.scalar_one_or_none()
-    if resource_type == "s3":
-        result = await db.execute(select(S3Connection.alias).where(S3Connection.alias == resource_id))
-        return result.scalar_one_or_none()
-    if resource_type == "nas":
-        result = await db.execute(select(NASConnection.alias).where(NASConnection.alias == resource_id))
-        return result.scalar_one_or_none()
-    if resource_type == "server":
-        result = await db.execute(select(MonitoredHost.name).where(MonitoredHost.name == resource_id))
-        return result.scalar_one_or_none()
-    if resource_type == "service":
-        result = await db.execute(select(MonitoredService.name).where(MonitoredService.name == resource_id))
+    column = RESOURCE_ID_COLUMNS.get(resource_type)
+    if column is not None:
+        result = await db.execute(select(column).where(column == resource_id))
         return result.scalar_one_or_none()
 
     items = await _load_apisix_resources(resource_type)
@@ -234,77 +238,29 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
         for owner in owner_result.scalars().all()
     }
 
+    def row(resource_type: str, resource_id: str, display_name: str) -> ResourceOwnerResponse:
+        owner = owners.get((resource_type, resource_id))
+        return ResourceOwnerResponse(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            display_name=display_name,
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
+        )
+
     rows: list[ResourceOwnerResponse] = []
+    for resource_type, column in RESOURCE_ID_COLUMNS.items():
+        result = await db.execute(select(column).order_by(column))
+        rows.extend(row(resource_type, name, name) for name in result.scalars().all())
 
-    db_result = await db.execute(select(DBConnection.alias).order_by(DBConnection.alias))
-    for alias in db_result.scalars().all():
-        owner = owners.get(("db", alias))
-        rows.append(ResourceOwnerResponse(
-            resource_type="db",
-            resource_id=alias,
-            display_name=alias,
-            emails=_parse_emails(owner.emails) if owner is not None else [],
-            alerts_enabled=owner.alerts_enabled if owner is not None else True,
-        ))
-
-    s3_result = await db.execute(select(S3Connection.alias).order_by(S3Connection.alias))
-    for alias in s3_result.scalars().all():
-        owner = owners.get(("s3", alias))
-        rows.append(ResourceOwnerResponse(
-            resource_type="s3",
-            resource_id=alias,
-            display_name=alias,
-            emails=_parse_emails(owner.emails) if owner is not None else [],
-            alerts_enabled=owner.alerts_enabled if owner is not None else True,
-        ))
-
-    nas_result = await db.execute(select(NASConnection.alias).order_by(NASConnection.alias))
-    for alias in nas_result.scalars().all():
-        owner = owners.get(("nas", alias))
-        rows.append(ResourceOwnerResponse(
-            resource_type="nas",
-            resource_id=alias,
-            display_name=alias,
-            emails=_parse_emails(owner.emails) if owner is not None else [],
-            alerts_enabled=owner.alerts_enabled if owner is not None else True,
-        ))
-
-    server_result = await db.execute(select(MonitoredHost.name).order_by(MonitoredHost.name))
-    for name in server_result.scalars().all():
-        owner = owners.get(("server", name))
-        rows.append(ResourceOwnerResponse(
-            resource_type="server",
-            resource_id=name,
-            display_name=name,
-            emails=_parse_emails(owner.emails) if owner is not None else [],
-            alerts_enabled=owner.alerts_enabled if owner is not None else True,
-        ))
-
-    service_result = await db.execute(select(MonitoredService.name).order_by(MonitoredService.name))
-    for name in service_result.scalars().all():
-        owner = owners.get(("service", name))
-        rows.append(ResourceOwnerResponse(
-            resource_type="service",
-            resource_id=name,
-            display_name=name,
-            emails=_parse_emails(owner.emails) if owner is not None else [],
-            alerts_enabled=owner.alerts_enabled if owner is not None else True,
-        ))
-
-    for resource_type in ("route",):
+    for resource_type in APISIX_RESOURCE_TYPES:
         for item in await _load_apisix_resources(resource_type):
             raw_id = item.get("id")
             if raw_id is None:
                 continue
             resource_id = str(raw_id)
-            display_name = _apisix_resource_display_name(item, resource_id)
-            owner = owners.get((resource_type, resource_id))
-            rows.append(ResourceOwnerResponse(
-                resource_type=resource_type,
-                resource_id=resource_id,
-                display_name=display_name,
-                emails=_parse_emails(owner.emails) if owner is not None else [],
-                alerts_enabled=owner.alerts_enabled if owner is not None else True,
+            rows.append(row(
+                resource_type, resource_id, _apisix_resource_display_name(item, resource_id)
             ))
 
     return rows

@@ -135,3 +135,38 @@ async def test_http_errors_propagate(query_fn):
     with patch("app.services.prometheus_client._get_client", return_value=client):
         with pytest.raises(httpx.HTTPStatusError):
             await query_fn("up")
+
+
+def _item(labels, value):
+    return {"metric": labels, "value": value}
+
+
+def test_map_by_label_skips_unlabeled_and_unparseable_items():
+    results = [
+        _item({"route": "a"}, [1, "2.5"]),
+        _item({}, [1, "9"]),
+        _item({"route": ""}, [1, "9"]),
+        _item({"route": "b"}, None),
+        _item({"route": "c"}, [1]),
+        _item({"route": "d"}, [1, "x"]),
+        _item({"route": "e"}, [1, "NaN"]),
+        _item({"route": "f"}, [1, "+Inf"]),
+    ]
+    out = prometheus_client.map_by_label(results, "route")
+    assert set(out) == {"a", "e", "f"}
+    assert out["a"] == 2.5
+    assert out["f"] == float("inf")
+    assert out["e"] != out["e"]  # NaN is kept unless asked to drop it
+    assert prometheus_client.map_by_label(None, "route") == {}
+
+
+def test_map_by_label_files_empty_labels_and_drops_nan_on_request():
+    results = [_item({"consumer": ""}, [1, "3"]), _item({"consumer": "k"}, [1, "NaN"])]
+    out = prometheus_client.map_by_label(results, "consumer", empty="(none)", drop_nan=True)
+    assert out == {"(none)": 3.0}
+
+
+def test_http_error_is_a_502_naming_the_cause():
+    exc = prometheus_client.http_error(RuntimeError("boom"))
+    assert exc.status_code == 502
+    assert exc.detail == "Prometheus error: boom"

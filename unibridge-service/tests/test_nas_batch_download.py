@@ -9,7 +9,6 @@ from __future__ import annotations
 import io
 import os
 import zipfile
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,6 +16,7 @@ from app.config import settings
 from app.models import NASConnection
 from app.services.nas_manager import nas_manager
 from tests.conftest import auth_header
+from tests.helpers import create_api_key_via_admin
 
 A_TXT = b"alpha payload"
 B_BIN = b"\x00\x01\x02" * 1000
@@ -68,28 +68,6 @@ async def share(nas_root):
     os.mkfifo(base / "pipe")
     await _register("nas", base)
     return base
-
-
-async def _create_apikey(client, admin_token, *, name, key, allowed_databases, allowed_routes):
-    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        mock_apisix.put_resource = AsyncMock(return_value={
-            "username": name,
-            "plugins": {"key-auth": {"key": key}},
-        })
-        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
-
-        resp = await client.post(
-            "/admin/api-keys",
-            json={
-                "name": name,
-                "api_key": key,
-                "allowed_databases": allowed_databases,
-                "allowed_routes": allowed_routes,
-            },
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 201, resp.text
 
 
 async def _post_zip(client, token, alias, paths):
@@ -281,11 +259,11 @@ async def test_zip_jwt_without_nas_browse_403(client, user_token, share):
 
 
 async def test_zip_apikey_rejects_unallowed_alias(client, admin_token, share):
-    await _create_apikey(
+    await create_api_key_via_admin(
         client,
         admin_token,
         name="zip-other",
-        key="zip-other-key",
+        api_key="zip-other-key",
         allowed_databases=["some-other-nas"],
         allowed_routes=["nas-api"],
     )
@@ -301,11 +279,11 @@ async def test_zip_apikey_rejects_unallowed_alias(client, admin_token, share):
 
 
 async def test_zip_apikey_allows_configured_alias(client, admin_token, share):
-    await _create_apikey(
+    await create_api_key_via_admin(
         client,
         admin_token,
         name="zip-app",
-        key="zip-app-key",
+        api_key="zip-app-key",
         allowed_databases=["nas"],
         allowed_routes=["nas-api"],
     )

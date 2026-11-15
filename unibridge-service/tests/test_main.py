@@ -1,114 +1,38 @@
 from __future__ import annotations
 
+import json
+import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
 
-from app.main import lifespan
-from app.routers.gateway import _SYSTEM_ROUTE_URIS, _route_paths, _shadowed_system_uri
-
-# A BIFROST_TEST_VK the /api/llm routes can carry (llm_routes.usable_virtual_key).
-VK = "sk-bf-" + "v" * 32
-
-
-class _DummyTask:
-    def cancel(self) -> None:
-        return None
-
-    def __await__(self):
-        async def _done():
-            return None
-
-        return _done().__await__()
-
-
-class _FakeDb:
-    async def execute(self, _query):
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
-
-    async def commit(self):
-        return None
-
-
-async def _fake_get_db():
-    yield _FakeDb()
-
-
-def _keyed_get_resource(resources: dict[tuple[str, str], object]) -> AsyncMock:
-    """apisix_client.get_resource fake keyed by (resource, resource_id).
-
-    Order-independent on purpose: with a positional ``side_effect`` list, adding
-    a lookup anywhere in the lifespan silently shifts which response every later
-    call receives. Unmapped keys raise the "missing resource" error the lifespan
-    treats as first-boot creation, so an empty mapping means "nothing exists
-    yet". Map a key to an exception to make that one lookup fail.
-    """
-
-    def _get(resource, resource_id):
-        try:
-            value = resources[(resource, resource_id)]
-        except KeyError:
-            raise RuntimeError(f"404 {resource}/{resource_id} not found") from None
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    return AsyncMock(side_effect=_get)
+from app.routers.gateway import _shadowed_system_uri
+from app.services.apisix_client import route_paths
+from app.services.apisix_system_resources import SYSTEM_ROUTE_URIS
+from tests.helpers import BIFROST_VK, DummyTask, keyed_get_resource, put_bodies, run_lifespan
 
 
 async def test_lifespan_provisions_the_system_routes():
-    app = FastAPI()
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
         ),
-        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        put_resource=put_resource,
+    )
 
-    upstream_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "upstreams"
-    }
-    route_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }
+    upstream_calls = put_bodies(put_resource, "upstreams")
+    route_calls = put_bodies(put_resource, "routes")
 
     # The prometheus global rule must pin prefer_name — it is what makes the
     # Prometheus `route` label carry route *names* instead of ids (Grafana
     # Route picker); reverting the body to {} silently regresses to id labels.
-    global_rule_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "global_rules"
-    }
+    global_rule_calls = put_bodies(put_resource, "global_rules")
     assert global_rule_calls["prometheus"] == {
         "plugins": {"prometheus": {"prefer_name": True}}
     }
@@ -119,8 +43,8 @@ async def test_lifespan_provisions_the_system_routes():
     # route cannot take one even when the live APISIX listing comes back
     # without the system routes.
     for route_id, body in route_calls.items():
-        for path in _route_paths(body):
-            assert _shadowed_system_uri(path, list(_SYSTEM_ROUTE_URIS)), (route_id, path)
+        for path in route_paths(body):
+            assert _shadowed_system_uri(path, list(SYSTEM_ROUTE_URIS)), (route_id, path)
     for route_id in (
         "query-api", "query-template-write-api", "s3-api", "network-api", "network-write-api"
     ):
@@ -134,45 +58,73 @@ async def test_lifespan_provisions_the_system_routes():
     assert route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is False
 
 
-async def test_lifespan_uses_configured_apisix_upstream_nodes():
-    app = FastAPI()
+# What first-boot provisioning sends for the fixed service routes, key order
+# included: scripts/deploy-bluegreen.sh matches the route JSON APISIX hands
+# back, and the bodies are built from a table (apisix_system_resources), so a
+# table edit must not reshape them unnoticed. Written with the internal-proxy
+# secret "proxy-secret" and a 310s query route timeout.
+_PINNED_SERVICE_BODIES = {
+    ("upstreams", "unibridge-service"): '{"name": "unibridge-service", "type": "roundrobin", "nodes": {"unibridge-service:8000": 1}}',
+    ("routes", "query-api"): '{"name": "query-api", "uri": "/api/query/*", "methods": ["POST", "GET"], "upstream_id": "unibridge-service", "timeout": {"connect": 10, "send": 310, "read": 310}, "plugins": {"key-auth": {}, "proxy-rewrite": {"regex_uri": ["^/api/query(.*)", "/query$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "query-template-write-api"): '{"name": "query-template-write-api", "desc": "Create, edit, and delete query templates", "uri": "/api/query/templates/*", "methods": ["PUT", "PATCH", "DELETE"], "priority": 20, "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/query(.*)", "/query$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "s3-api"): '{"name": "s3-api", "uri": "/api/s3/*", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "proxy-rewrite": {"regex_uri": ["^/api/s3(.*)", "/s3$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "nas-api"): '{"name": "nas-api", "uri": "/api/nas/*", "methods": ["GET", "POST"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/nas(.*)", "/nas$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "usages-api"): '{"name": "usages-api", "uri": "/api/usages", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/usages(.*)", "/usages$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "mcp-api"): '{"name": "mcp-api", "desc": "MCP server (Streamable HTTP): query templates, databases, S3, NAS", "uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"], "methods": ["GET", "POST", "DELETE"], "upstream_id": "unibridge-service", "timeout": {"connect": 10, "send": 310, "read": 310}, "plugins": {"key-auth": {"hide_credentials": false}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/mcp(.*)", "/mcp$1"], "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "network-api"): '{"name": "network-api", "desc": "Network map: regions, hosts, firewall openings, port usage, access checks", "uri": "/api/network/*", "methods": ["GET"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/network(.*)", "/network$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("routes", "network-write-api"): '{"name": "network-write-api", "desc": "Network map: record regions, hosts, firewall openings and port usage", "uri": "/api/network/*", "methods": ["POST", "PUT", "DELETE"], "upstream_id": "unibridge-service", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/network(.*)", "/network$1"], "use_real_request_uri_unsafe": true, "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}}}, "status": 1}',
+    ("upstreams", "prometheus"): '{"name": "prometheus", "type": "roundrobin", "scheme": "http", "nodes": {"prometheus:9090": 1}}',
+    ("routes", "prometheus-api"): '{"name": "prometheus-api", "desc": "Prometheus HTTP API (PromQL queries, read-only) via the gateway", "uri": "/api/prometheus/*", "methods": ["GET", "POST"], "upstream_id": "prometheus", "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["__deny_all__"]}, "proxy-rewrite": {"regex_uri": ["^/api/prometheus(.*)", "$1"], "use_real_request_uri_unsafe": true}}, "status": 1}',
+}
+
+
+async def test_lifespan_writes_the_fixed_service_routes_exactly_as_pinned():
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_PROVISION_ON_START=True,
-                APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-green:8000",
-                APISIX_LLM_CONVERTER_NODE="llm-converter-green:4001",
-                APISIX_PROMETHEUS_NODE="prometheus-alt:9090",
-            ),
-        ),
-        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+    await run_lifespan(
+        SimpleNamespace(BIFROST_TEST_VK=BIFROST_VK, APISIX_INTERNAL_PROXY_SECRET="proxy-secret"),
+        put_resource=put_resource,
+        replay=AsyncMock(),
+        extra_patches=[patch("app.main.settings_manager.query_route_timeout", 310)],
+    )
 
-    upstream_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "upstreams"
-    }
+    puts = [call.args for call in put_resource.await_args_list]
+    # The provisioning order: global rules, the service routes behind their
+    # upstreams, then the /api/llm routes and the two explaining 404s.
+    assert [args[:2] for args in puts] == [
+        ("global_rules", "prometheus"),
+        ("global_rules", "unibridge-node-path-prefix"),
+        *_PINNED_SERVICE_BODIES,
+        ("upstreams", "bifrost"),
+        ("upstreams", "llm-converter"),
+        ("routes", "llm-messages"),
+        ("routes", "llm-responses"),
+        ("routes", "llm-models"),
+        ("routes", "llm-proxy"),
+        ("routes", "llm-metrics"),
+        ("routes", "llm-not-found"),
+        ("routes", "llm-bi-not-found"),
+    ]
+    written = {args[:2]: json.dumps(args[2]) for args in puts}
+    for key, expected in _PINNED_SERVICE_BODIES.items():
+        assert written[key] == expected, key
+
+
+async def test_lifespan_uses_configured_apisix_upstream_nodes():
+    put_resource = AsyncMock()
+
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_PROVISION_ON_START=True,
+            APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-green:8000",
+            APISIX_LLM_CONVERTER_NODE="llm-converter-green:4001",
+            APISIX_PROMETHEUS_NODE="prometheus-alt:9090",
+        ),
+        put_resource=put_resource,
+    )
+
+    upstream_calls = put_bodies(put_resource, "upstreams")
 
     assert upstream_calls["unibridge-service"]["nodes"] == {
         "unibridge-service-green:8000": 1
@@ -184,47 +136,19 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
 
 
 async def test_lifespan_provisions_prometheus_query_route():
-    app = FastAPI()
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
         ),
-        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        put_resource=put_resource,
+    )
 
-    upstream_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "upstreams"
-    }
-    route_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }
+    upstream_calls = put_bodies(put_resource, "upstreams")
+    route_calls = put_bodies(put_resource, "routes")
 
     assert upstream_calls["prometheus"]["scheme"] == "http"
     assert upstream_calls["prometheus"]["nodes"] == {"prometheus:9090": 1}
@@ -249,42 +173,18 @@ async def test_lifespan_provisions_prometheus_query_route():
 
 
 async def test_lifespan_provisions_llm_metrics_route():
-    app = FastAPI()
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
         ),
-        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        put_resource=put_resource,
+    )
 
-    route = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }["llm-metrics"]
+    route = put_bodies(put_resource, "routes")["llm-metrics"]
 
     assert route["uri"] == "/api/llm/metrics"
     assert route["upstream_id"] == "bifrost"
@@ -305,42 +205,18 @@ async def test_lifespan_provisions_llm_metrics_route():
 
 
 async def test_lifespan_provisions_llm_models_route():
-    app = FastAPI()
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
         ),
-        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        put_resource=put_resource,
+    )
 
-    route = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }["llm-models"]
+    route = put_bodies(put_resource, "routes")["llm-models"]
 
     assert route["uri"] == "/api/llm/v1/models"
     # The converter serves the listing (it appends the claude/ aliases), not
@@ -355,44 +231,29 @@ async def test_lifespan_provisions_llm_models_route():
     assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
 
     headers = route["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert headers["x-bf-vk"] == VK
+    assert headers["x-bf-vk"] == BIFROST_VK
     assert headers["x-bf-dim-consumer"] == "$consumer_name"
     assert "Authorization" not in headers
 
 
 async def test_lifespan_can_skip_apisix_route_provisioning():
-    app = FastAPI()
     put_resource = AsyncMock()
     get_resource = AsyncMock()
     list_resources = AsyncMock(return_value={"items": []})
     replay = AsyncMock()
-    start_checker = AsyncMock(return_value=_DummyTask())
+    start_checker = AsyncMock(return_value=DummyTask())
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_PROVISION_ON_START=False,
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_PROVISION_ON_START=False,
         ),
-        patch("app.services.apisix_client.get_resource", get_resource),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch("app.services.apisix_client.list_resources", list_resources),
-        patch("app.main.api_keys.sync_all_consumer_route_restrictions", replay),
-        patch("app.services.alert_checker.start_checker", start_checker),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        get_resource=get_resource,
+        put_resource=put_resource,
+        list_resources=list_resources,
+        replay=replay,
+        start_checker=start_checker,
+    )
 
     # Route/upstream provisioning is skipped entirely when the flag is false —
     # but the global rules are still reconciled on every boot: prometheus (the
@@ -418,33 +279,40 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
 
 
 async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
-    app = FastAPI()
     put_resource = AsyncMock()
     load_alert_state = AsyncMock()
-    start_checker = AsyncMock(return_value=_DummyTask())
+    start_checker = AsyncMock(return_value=DummyTask())
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=None)),
-        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch("app.services.alert_state.load_alert_state_from_db", load_alert_state),
-        patch("app.services.alert_checker.start_checker", start_checker),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+    await run_lifespan(
+        SimpleNamespace(BIFROST_TEST_VK=None),
+        put_resource=put_resource,
+        start_checker=start_checker,
+        extra_patches=[patch("app.services.alert_state.load_alert_state_from_db", load_alert_state)],
+    )
 
     load_alert_state.assert_awaited_once()
     start_checker.assert_awaited_once()
     assert load_alert_state.await_args.args[1] is start_checker.await_args.args[0]
+
+
+async def test_lifespan_keeps_apisix_alert_state_when_the_listing_fails(caplog):
+    """The stale-state purge gets no upstream/route ids (None, not an empty
+    set) when APISIX cannot list them, so an outage wipes no alert state."""
+    purge = AsyncMock()
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await run_lifespan(
+            SimpleNamespace(BIFROST_TEST_VK=None, APISIX_PROVISION_ON_START=False),
+            list_resources=AsyncMock(side_effect=RuntimeError("apisix down")),
+            replay=AsyncMock(),
+            extra_patches=[patch("app.services.alert_state.purge_stale_states", purge)],
+        )
+
+    purge.assert_awaited_once()
+    assert purge.await_args.kwargs["known_upstream_ids"] is None
+    assert purge.await_args.kwargs["known_route_ids"] is None
+    assert "could not list upstreams" in caplog.text
+    assert "could not list routes" in caplog.text
 
 
 async def test_metrics_endpoint_exposes_prometheus_text(client):
@@ -456,9 +324,8 @@ async def test_metrics_endpoint_exposes_prometheus_text(client):
 
 
 async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
-    app = FastAPI()
     put_resource = AsyncMock()
-    get_resource = _keyed_get_resource(
+    get_resource = keyed_get_resource(
         {
             # Both color-pinned upstreams already point where this instance
             # would write them, so the claim gate refreshes them in place.
@@ -645,39 +512,17 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         }
     )
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(
-                BIFROST_TEST_VK=VK,
-                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
-                APISIX_ADMIN_KEY="admin-secret",
-            ),
+    await run_lifespan(
+        SimpleNamespace(
+            BIFROST_TEST_VK=BIFROST_VK,
+            APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+            APISIX_ADMIN_KEY="admin-secret",
         ),
-        patch("app.services.apisix_client.get_resource", get_resource),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+        get_resource=get_resource,
+        put_resource=put_resource,
+    )
 
-    route_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }
+    route_calls = put_bodies(put_resource, "routes")
     upstream_ids = [
         call.args[1]
         for call in put_resource.await_args_list
@@ -734,7 +579,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         "whitelist": ["discovery-consumer"]
     }
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert llm_headers["x-bf-vk"] == VK
+    assert llm_headers["x-bf-vk"] == BIFROST_VK
     assert llm_headers["x-bf-dim-consumer"] == "$consumer_name"
     for route_id in (
         "query-api", "query-template-write-api", "s3-api", "nas-api", "usages-api",
@@ -750,48 +595,25 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
             "whitelist": [_consumer]
         }
         _headers = route_calls[_route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
-        assert _headers["x-bf-vk"] == VK
+        assert _headers["x-bf-vk"] == BIFROST_VK
         assert _headers["x-bf-dim-consumer"] == "$consumer_name"
         assert route_calls[_route_id]["upstream_id"] == "llm-converter"
 
 
 async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation():
-    app = FastAPI()
     put_resource = AsyncMock()
     # Empty mapping: every route and upstream lookup reports "missing", which is
     # exactly the first-boot state this test is about.
-    get_resource = _keyed_get_resource({})
+    get_resource = keyed_get_resource({})
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=VK)),
-        patch("app.services.apisix_client.get_resource", get_resource),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.main.api_keys.sync_all_consumer_route_restrictions",
-            new=AsyncMock(),
-        ),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+    await run_lifespan(
+        SimpleNamespace(BIFROST_TEST_VK=BIFROST_VK),
+        get_resource=get_resource,
+        put_resource=put_resource,
+        replay=AsyncMock(),
+    )
 
-    route_calls = {
-        call.args[1]: call.args[2]
-        for call in put_resource.await_args_list
-        if call.args[0] == "routes"
-    }
+    route_calls = put_bodies(put_resource, "routes")
     assert "consumer-restriction" not in route_calls["query-api"]["plugins"]
     assert route_calls["query-template-write-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
@@ -837,33 +659,17 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
 
 
 async def test_lifespan_retries_when_protected_route_state_lookup_fails():
-    app = FastAPI()
     put_resource = AsyncMock()
     get_resource = AsyncMock(side_effect=RuntimeError("APISIX unavailable"))
     sleep = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK="")),
-        patch("app.services.apisix_client.get_resource", get_resource),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch("asyncio.sleep", sleep),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        with pytest.raises(RuntimeError, match="APISIX unavailable"):
-            async with lifespan(app):
-                pass
+    with pytest.raises(RuntimeError, match="APISIX unavailable"):
+        await run_lifespan(
+            SimpleNamespace(BIFROST_TEST_VK=""),
+            get_resource=get_resource,
+            put_resource=put_resource,
+            extra_patches=[patch("asyncio.sleep", sleep)],
+        )
 
     route_ids = [
         call.args[1]
@@ -884,29 +690,9 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
 
 
 async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
-    app = FastAPI()
     put_resource = AsyncMock()
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK="")),
-        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+    await run_lifespan(SimpleNamespace(BIFROST_TEST_VK=""), put_resource=put_resource)
 
     route_ids = [
         call.args[1]
@@ -928,7 +714,6 @@ async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
 
 
 async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_with_fresh_db_block():
-    app = FastAPI()
     events: list[tuple[str, str]] = []
 
     class _ConnectionsDb:
@@ -973,7 +758,8 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
-    async def fake_get_db_sequence():
+    @asynccontextmanager
+    async def fake_session_sequence():
         yield next(db_iter)
 
     async def put_resource(resource_type, resource_id, body):
@@ -996,30 +782,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
         ]
     )
 
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: fake_get_db_sequence()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=VK)),
-        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
-        patch("app.services.apisix_client.put_resource", new=AsyncMock(side_effect=put_resource)),
-        patch(
-            "app.main.api_keys.sync_all_consumer_route_restrictions",
-            replay_route_restrictions,
-        ),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(app):
-            pass
+    await run_lifespan(
+        SimpleNamespace(BIFROST_TEST_VK=BIFROST_VK),
+        put_resource=AsyncMock(side_effect=put_resource),
+        replay=replay_route_restrictions,
+        session=fake_session_sequence,
+    )
 
     assert replay_route_restrictions.await_count == 1
     db_arg = replay_route_restrictions.await_args.args[0]
@@ -1048,3 +816,17 @@ class TestApiDocsGate:
     async def test_api_docs_endpoints_are_disabled_by_default(self, client, path):
         resp = await client.get(path)
         assert resp.status_code == 404
+
+
+def test_the_boot_purge_reads_every_resource_type_kept_in_the_meta_db():
+    """Each type with an id column in alerts.RESOURCE_ID_COLUMNS feeds the
+    stale-state purge, under a keyword purge_stale_states takes."""
+    import inspect
+
+    from app.main import _PURGE_KEYWORDS
+    from app.routers.alerts import RESOURCE_ID_COLUMNS
+    from app.services.alert_state import purge_stale_states
+
+    assert sorted(t for t, _ in _PURGE_KEYWORDS) == sorted(RESOURCE_ID_COLUMNS)
+    params = inspect.signature(purge_stale_states).parameters
+    assert all(keyword in params for _, keyword in _PURGE_KEYWORDS)

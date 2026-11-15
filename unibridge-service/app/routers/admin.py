@@ -25,6 +25,7 @@ from app.models import (
 from app.routers.query import (
     TEMPLATE_HEALTH_RULE,
     _encode_sample_params,
+    _load_template_or_404,
     _template_audit_snapshot,
     _to_connection_response,
     _to_template_response,
@@ -51,7 +52,6 @@ from app.schemas import (
     QueryTemplateUsageResponse,
     SystemConfigResponse,
     SystemConfigUpdate,
-    normalize_query_template_path,
 )
 from app.services import schema_browser
 from app.services.alert_state import delete_alert_state
@@ -770,20 +770,7 @@ async def update_query_template(
     db: AsyncSession = Depends(get_db),
 ) -> QueryTemplateResponse:
     """Update a saved query template."""
-    try:
-        normalized_path = normalize_query_template_path(template_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    result = await db.execute(
-        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
-    )
-    template = result.scalar_one_or_none()
-    if template is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Query template path '{normalized_path}' not found",
-        )
+    normalized_path, template = await _load_template_or_404(db, template_path)
 
     before_snapshot = _template_audit_snapshot(template)
 
@@ -858,20 +845,7 @@ async def delete_query_template(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a saved query template."""
-    try:
-        normalized_path = normalize_query_template_path(template_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    result = await db.execute(
-        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
-    )
-    template = result.scalar_one_or_none()
-    if template is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Query template path '{normalized_path}' not found",
-        )
+    normalized_path, template = await _load_template_or_404(db, template_path)
     before_snapshot = _template_audit_snapshot(template)
     await db.delete(template)
     await db.commit()

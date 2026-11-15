@@ -3,43 +3,24 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess
-from app.services import network_import, network_map
+from app.services import network_import
 from tests.conftest import auth_header
+from tests.helpers import HOSTS_A2_B1, REGIONS_AB, insert_api_key, seed_network, sessions
 
 
-@pytest.fixture(autouse=True)
-def _no_gateway(monkeypatch):
-    monkeypatch.setattr(
-        network_map.apisix_client, "list_resources", AsyncMock(return_value={"items": []})
-    )
-    network_map.clear_gateway_cache()
-    yield
-    network_map.clear_gateway_cache()
+pytestmark = pytest.mark.usefixtures("no_gateway")
 
 
 async def _agent(seeded_db, name="prober") -> dict[str, str]:
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
-        db.add(ApiKeyAccess(consumer_name=name, allowed_routes=json.dumps(["network-api", "network-write-api"])))
-        await db.commit()
-    return {"X-Consumer-Username": name}
+    return await insert_api_key(seeded_db, name, allowed_routes=["network-api", "network-write-api"])
 
 
 async def _setup(client, h) -> dict[str, int]:
-    ids: dict[str, int] = {}
-    for name, cidr in (("A", "10.1.0.0/16"), ("B", "10.2.0.0/16")):
-        resp = await client.post("/network/regions", headers=h, json={"name": name, "cidrs": [cidr]})
-        ids[name] = resp.json()["id"]
-    for name, ip in (("a1", "10.1.0.1"), ("a2", "10.1.0.2"), ("b1", "10.2.0.1"), ("b2", "10.2.0.2")):
-        resp = await client.post("/network/hosts", headers=h, json={"name": name, "ip": ip})
-        ids[name] = resp.json()["id"]
-    return ids
+    return await seed_network(client, h, REGIONS_AB, {**HOSTS_A2_B1, "b2": "10.2.0.2"})
 
 
 def _probe(src, dst, port, result, **extra):
@@ -111,8 +92,7 @@ async def test_newer_probe_replaces_older_and_older_never_overwrites(client, adm
 async def test_probe_reports_need_the_write_grant(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     await _setup(client, h)
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
+    async with sessions(seeded_db)() as db:
         db.add(ApiKeyAccess(consumer_name="reader", allowed_routes=json.dumps(["network-api"])))
         await db.commit()
     resp = await client.post("/network/probes", headers={"X-Consumer-Username": "reader"},

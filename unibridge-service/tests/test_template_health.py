@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.middleware.rate_limiter import rate_limiter
 from app.models import AlertState, AuditLog, QueryTemplate
@@ -18,7 +17,7 @@ from app.services import alert_checker
 from app.services.alert_mutes import MuteIndex
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
-from tests.test_query_templates import _create_api_key, _create_database
+from tests.helpers import insert_api_key, register_database, sessions
 
 RULE = "template_health"
 SQL = "SELECT id, name FROM users WHERE id = :id"
@@ -78,8 +77,7 @@ async def _post_template(client, admin_token, **overrides):
 
 
 async def _stored(seeded_db, path: str = "reports/users") -> QueryTemplate | None:
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(select(QueryTemplate).where(QueryTemplate.path == path))
         return result.scalar_one_or_none()
 
@@ -88,7 +86,7 @@ async def _stored(seeded_db, path: str = "reports/users") -> QueryTemplate | Non
 
 
 async def test_sample_is_run_once_and_saved_with_the_template(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected() as execute_query:
         resp = await _post_template(client, admin_token, sample_params={"id": 1}, timeout=20)
     assert resp.status_code == 201, resp.text
@@ -105,7 +103,7 @@ async def test_sample_is_run_once_and_saved_with_the_template(client, admin_toke
 
 
 async def test_sample_names_must_be_the_template_params(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected() as execute_query:
         missing = await _post_template(client, admin_token, sample_params={})
         unknown = await _post_template(client, admin_token, sample_params={"id": 1, "x": 2})
@@ -117,7 +115,7 @@ async def test_sample_names_must_be_the_template_params(client, admin_token):
 
 
 async def test_template_without_params_takes_an_empty_sample(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected() as execute_query:
         resp = await _post_template(client, admin_token, sql="SELECT 1", sample_params={})
     assert resp.status_code == 201
@@ -126,7 +124,7 @@ async def test_template_without_params_takes_an_empty_sample(client, admin_token
 
 
 async def test_sample_that_returns_no_rows_is_refused(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected(_rows(0)):
         resp = await _post_template(client, admin_token, sample_params={"id": 999})
     assert resp.status_code == 400
@@ -137,7 +135,7 @@ async def test_sample_that_returns_no_rows_is_refused(client, admin_token, seede
 async def test_sample_that_fails_is_refused_and_lands_in_the_query_history(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     error = RuntimeError('column "nope" does not exist')
     with _connected(error):
         resp = await _post_template(client, admin_token, sample_params={"id": 1})
@@ -148,8 +146,7 @@ async def test_sample_that_fails_is_refused_and_lands_in_the_query_history(
         "sample_params could not be run: Query execution failed. Check server logs for details."
     )
     assert await _stored(seeded_db) is None
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         row = (await db.execute(select(AuditLog))).scalar_one()
     assert row.status == "error" and 'column "nope" does not exist' in row.error_message
     assert row.user == "testadmin" and row.template_path is None
@@ -158,7 +155,7 @@ async def test_sample_that_fails_is_refused_and_lands_in_the_query_history(
 async def test_sample_is_saved_unrun_when_the_database_is_not_connected(client, admin_token):
     # The alias is registered in the meta DB but this process holds no
     # connection: the save goes through and the periodic check reports later.
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with patch("app.routers.query.execute_query", new_callable=AsyncMock) as execute_query:
         resp = await _post_template(client, admin_token, sample_params={"id": 1})
     assert resp.status_code == 201
@@ -166,7 +163,7 @@ async def test_sample_is_saved_unrun_when_the_database_is_not_connected(client, 
 
 
 async def test_admin_update_checks_the_sample_against_new_sql(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     headers = auth_header(admin_token)
     with _connected() as execute_query:
         await _post_template(client, admin_token, sample_params={"id": 1})
@@ -224,9 +221,9 @@ async def test_admin_update_checks_the_sample_against_new_sql(client, admin_toke
 
 
 async def test_agent_creates_and_edits_a_sample(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
-    await _create_api_key(
-        seeded_db, name="agent", allowed_databases=["maindb"],
+    await register_database(client, admin_token)
+    await insert_api_key(
+        seeded_db, "agent", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"],
     )
     headers = {"X-Consumer-Username": "agent"}
@@ -268,9 +265,9 @@ async def test_a_key_that_may_not_query_cannot_attach_a_sample(client, admin_tok
     # The save-time run is the caller's own query. Without it, a key holding
     # only the write route could have the service run SQL for it and read
     # "rows / no rows" off the answer, unaudited.
-    await _create_database(client, admin_token)
-    await _create_api_key(
-        seeded_db, name="writer", allowed_databases=["maindb"],
+    await register_database(client, admin_token)
+    await insert_api_key(
+        seeded_db, "writer", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"],
     )
     headers = {"X-Consumer-Username": "writer"}
@@ -296,9 +293,9 @@ async def test_a_key_that_may_not_query_cannot_attach_a_sample(client, admin_tok
 async def test_agent_sample_must_return_rows_and_a_stale_edit_runs_nothing(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
-    await _create_api_key(
-        seeded_db, name="agent", allowed_databases=["maindb"],
+    await register_database(client, admin_token)
+    await insert_api_key(
+        seeded_db, "agent", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"],
     )
     headers = {"X-Consumer-Username": "agent"}
@@ -326,9 +323,9 @@ async def test_agent_sample_must_return_rows_and_a_stale_edit_runs_nothing(
 
 
 async def test_agent_sql_edit_needs_a_fitting_sample(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
-    await _create_api_key(
-        seeded_db, name="agent", allowed_databases=["maindb"],
+    await register_database(client, admin_token)
+    await insert_api_key(
+        seeded_db, "agent", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"],
     )
     headers = {"X-Consumer-Username": "agent"}
@@ -356,7 +353,7 @@ async def test_agent_sql_edit_needs_a_fitting_sample(client, admin_token, seeded
 @pytest.fixture
 def checker(seeded_db, monkeypatch):
     """The checker on the test database, with mail captured instead of sent."""
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    factory = sessions(seeded_db)
     monkeypatch.setattr(alert_checker, "async_session", factory)
     # load_mute_index imports the session factory when it runs.
     monkeypatch.setattr("app.database.async_session", factory)
@@ -381,11 +378,10 @@ async def _health(client, admin_token) -> dict:
 
 async def test_check_runs_the_sample_and_records_ok(client, admin_token, seeded_db, checker):
     state, dispatch = checker
-    await _create_database(client, admin_token)
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    await register_database(client, admin_token)
 
     async def _audit_rows() -> int:
-        async with factory() as db:
+        async with sessions(seeded_db)() as db:
             return len((await db.execute(select(AuditLog))).scalars().all())
 
     with _connected() as execute_query:
@@ -414,7 +410,7 @@ async def test_no_rows_warns_then_an_error_escalates_then_rows_resolve(
     client, admin_token, checker
 ):
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
 
@@ -460,7 +456,7 @@ async def test_timeout_and_blocked_sql_are_errors(client, admin_token, checker):
     import asyncio
 
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
     with _connected(asyncio.TimeoutError()):
@@ -483,7 +479,7 @@ async def test_templates_of_a_down_or_unconnected_database_are_skipped(
     client, admin_token, checker
 ):
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
 
@@ -505,7 +501,7 @@ async def test_only_enabled_monitored_templates_with_a_sample_are_checked(
     client, admin_token, checker
 ):
     state, _dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected() as execute_query:
         await _post_template(client, admin_token, path="a/checked", sample_params={"id": 1})
         await _post_template(client, admin_token, path="b/no-sample")
@@ -526,7 +522,7 @@ async def test_state_is_forgotten_when_a_template_stops_being_checked(
     client, admin_token, seeded_db, checker
 ):
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     headers = auth_header(admin_token)
     with _connected():
         await _post_template(client, admin_token, path="a/one", sample_params={"id": 1})
@@ -552,8 +548,7 @@ async def test_state_is_forgotten_when_a_template_stops_being_checked(
     assert closed["a/one"]["alert_type"] == "resolved"
     assert "no longer checked" in closed["a/one"]["message"]
     assert closed["a/one"]["assignee_refs"] == [("db", "maindb")]
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         assert (await db.execute(select(AlertState))).scalars().all() == []
     assert (await _health(client, admin_token))["templates"] == {}
 
@@ -562,7 +557,7 @@ async def test_a_muted_template_alert_is_withheld(client, admin_token, checker):
     from datetime import datetime, timedelta, timezone
 
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
     until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
@@ -604,7 +599,7 @@ async def _round(state, now: datetime | None = None) -> None:
 
 async def test_the_daily_run_is_at_8_in_the_morning_kst(client, admin_token, checker):
     state, _dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected() as execute_query:
         await _post_template(client, admin_token, sample_params={"id": 1})
         execute_query.reset_mock()
@@ -636,7 +631,7 @@ async def test_a_failure_is_confirmed_in_minutes_and_an_open_alert_is_rechecked_
     client, admin_token, checker
 ):
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
 
@@ -682,7 +677,7 @@ async def test_a_failure_is_confirmed_in_minutes_and_an_open_alert_is_rechecked_
 
 async def test_an_edited_template_is_checked_again_at_once(client, admin_token, checker):
     state, dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     with _connected():
         await _post_template(client, admin_token, sample_params={"id": 1})
     with _connected(RuntimeError("relation users does not exist")):
@@ -858,7 +853,7 @@ async def test_a_long_name_and_path_still_fit_the_state_row(client, admin_token,
     # display_target is String(200); "name (path)" can reach 303 characters,
     # which Postgres refuses, so neither state nor history would be saved.
     state, _dispatch = checker
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     path = "reports/" + "p" * 150
     with _connected():
         resp = await _post_template(
@@ -868,8 +863,7 @@ async def test_a_long_name_and_path_still_fit_the_state_row(client, admin_token,
         await _check(state)
     entry = state.get_entry(RULE, path)
     assert entry["display_target"] == path
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         row = (await db.execute(select(AlertState))).scalar_one()
     assert len(row.display_target) <= 200
 

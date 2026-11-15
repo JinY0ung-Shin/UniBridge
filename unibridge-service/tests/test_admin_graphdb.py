@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 
 from tests.conftest import auth_header
-from tests.test_admin import _cm_patch
+from tests.helpers import cm_patch
 
 
 def _make_graphdb_payload(**overrides):
@@ -28,7 +28,7 @@ def _make_graphdb_payload(**overrides):
 
 
 async def test_create_graphdb_connection_with_http(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(),
@@ -41,7 +41,7 @@ async def test_create_graphdb_connection_with_http(client, admin_token):
 
 
 async def test_create_graphdb_connection_with_https(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-https", protocol="https"),
@@ -54,7 +54,7 @@ async def test_create_graphdb_connection_with_https(client, admin_token):
 async def test_create_graphdb_missing_protocol_returns_400(client, admin_token):
     payload = _make_graphdb_payload(alias="kg-noproto")
     del payload["protocol"]
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json=payload,
@@ -65,7 +65,7 @@ async def test_create_graphdb_missing_protocol_returns_400(client, admin_token):
 
 
 async def test_create_graphdb_invalid_protocol_returns_400(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-bolt", protocol="bolt"),
@@ -75,7 +75,7 @@ async def test_create_graphdb_invalid_protocol_returns_400(client, admin_token):
 
 
 async def test_create_graphdb_with_secure_returns_400(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         resp = await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-secure", secure=True),
@@ -86,7 +86,7 @@ async def test_create_graphdb_with_secure_returns_400(client, admin_token):
 
 
 async def test_list_tables_returns_empty_for_graphdb(client, admin_token):
-    with _cm_patch("graphdb") as cm, patch("app.services.schema_browser.connection_manager", cm):
+    with cm_patch("graphdb") as cm, patch("app.services.schema_browser.connection_manager", cm):
         # Create
         create = await client.post(
             "/admin/query/databases",
@@ -104,7 +104,7 @@ async def test_list_tables_returns_empty_for_graphdb(client, admin_token):
 
 
 async def test_upsert_permission_rejects_allowed_tables_for_graphdb(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-perm-reject"),
@@ -125,7 +125,7 @@ async def test_upsert_permission_rejects_allowed_tables_for_graphdb(client, admi
 
 
 async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-perm-accept"),
@@ -149,7 +149,7 @@ async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, a
 
 async def test_upsert_permission_rejects_empty_list_for_graphdb(client, admin_token):
     """GraphDB must reject any allowed_tables value, including an empty list."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await client.post(
             "/admin/query/databases",
             json=_make_graphdb_payload(alias="kg-perm-empty"),

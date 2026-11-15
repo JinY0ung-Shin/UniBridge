@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AlertSettings, MonitoredHost
 from app.services.alert_mutes import MuteIndex
 from app.services.gpu_report import is_report_due, maybe_send_gpu_util_report
+from tests.helpers import sessions
 
 UTC = timezone.utc
 
@@ -80,7 +80,7 @@ async def _seed(
     hosts: tuple[MonitoredHost, ...] = (),
     settings_row: bool = True,
 ):
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = sessions(engine)
     async with factory() as db:
         if settings_row:
             db.add(AlertSettings(

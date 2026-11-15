@@ -7,7 +7,8 @@ from fastapi import HTTPException
 import httpx
 
 from app.schemas import QueryResponse
-from tests.test_admin import _cm_patch, auth_header
+from tests.conftest import auth_header
+from tests.helpers import cm_patch
 
 
 SELECT_RESPONSE = {
@@ -80,7 +81,7 @@ def _patch_query_cm_db_type_only():
 
 async def test_select_via_admin_token_returns_columns(client, admin_token):
     """Admin role executes SELECT against graphdb alias and gets bindings."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-select")
         with _patch_query_cm():
             resp = await client.post(
@@ -98,7 +99,7 @@ async def test_select_via_admin_token_returns_columns(client, admin_token):
 
 
 async def test_ask_via_admin_token_returns_boolean(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-ask")
         with _patch_query_cm():
             resp = await client.post(
@@ -113,7 +114,7 @@ async def test_ask_via_admin_token_returns_boolean(client, admin_token):
 
 
 async def test_construct_via_admin_token_returns_graph(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-construct")
         with _patch_query_cm():
             resp = await client.post(
@@ -133,7 +134,7 @@ async def test_construct_via_admin_token_returns_graph(client, admin_token):
 
 async def test_insert_rejected_with_422(client, admin_token):
     """Write SPARQL must be rejected by statement-type detector before reaching upstream."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-insert")
         with _patch_query_cm_db_type_only():
             resp = await client.post(
@@ -159,7 +160,7 @@ async def test_insert_rejected_with_422(client, admin_token):
 
 
 async def test_write_sparql_template_returns_read_only_400(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-template")
         resp = await client.post(
             "/admin/query/templates",
@@ -178,7 +179,7 @@ async def test_write_sparql_template_returns_read_only_400(client, admin_token):
 
 async def test_non_empty_params_rejected_with_422(client, admin_token):
     """GraphDB does not support bind parameters."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-params")
         with _patch_query_cm_db_type_only():
             resp = await client.post(
@@ -196,7 +197,7 @@ async def test_non_empty_params_rejected_with_422(client, admin_token):
 
 async def test_empty_params_allowed(client, admin_token):
     """Empty dict params is accepted (consistent with other backends)."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-empty-params")
         with _patch_query_cm():
             resp = await client.post(
@@ -224,7 +225,7 @@ async def test_validate_sql_skipped_for_graphdb(client, admin_token):
         "Precondition failed: test string must trip the sqlglot blacklist"
     )
 
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-grant")
         with _patch_query_cm():
             resp = await client.post(
@@ -245,7 +246,7 @@ async def test_extra_blocked_keywords_apply_to_graphdb(client, admin_token, monk
         ["credit_card"],
     )
 
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-blocked")
         with _patch_query_cm_db_type_only():
             resp = await client.post(
@@ -266,7 +267,7 @@ async def test_extra_blocked_keywords_apply_to_graphdb(client, admin_token, monk
 
 async def test_graphdb_executor_http_exception_status_is_preserved(client, admin_token):
     """Executor HTTPException statuses must not be collapsed into generic 400."""
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-too-large")
         with _patch_query_cm(), patch(
             "app.routers.query.execute_graphdb_query",
@@ -285,7 +286,7 @@ async def test_graphdb_executor_http_exception_status_is_preserved(client, admin
 
 
 async def test_graphdb_executor_504_records_timeout(client, admin_token):
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-slow")
         with _patch_query_cm(), patch(
             "app.routers.query.execute_graphdb_query",
@@ -332,7 +333,7 @@ async def test_timeout_override_forwarded_to_graphdb_executor(client, admin_toke
             elapsed_ms=1,
         )
     )
-    with _cm_patch("graphdb"):
+    with cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-timeout")
         with _patch_query_cm(), patch(
             "app.routers.query.execute_graphdb_query",

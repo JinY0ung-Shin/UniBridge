@@ -9,49 +9,18 @@ import pytest
 
 from app.services import alert_checker
 from app.services.alert_state import AlertStateManager
-
-
-class _Result:
-    def __init__(self, value=None, *, rows=None) -> None:
-        self.value = value
-        self.rows = list(rows or [])
-
-    def scalar_one_or_none(self):
-        return self.value
-
-    def one_or_none(self):
-        return self.value
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self.rows
-
-
-class _SessionContext:
-    def __init__(self, db=None, *, enter_error: Exception | None = None) -> None:
-        self.db = db
-        self.enter_error = enter_error
-
-    async def __aenter__(self):
-        if self.enter_error is not None:
-            raise self.enter_error
-        return self.db
-
-    async def __aexit__(self, exc_type, exc, traceback):
-        return False
+from tests.helpers import FakeResult, FakeSessionContext
 
 
 @pytest.mark.parametrize(
     ("stored", "expected"),
-    [(None, 60), (5, 30), (7200, 3600)],
+    [(None, 60), (5, 30), (90, 90), (7200, 3600)],
 )
 async def test_get_check_interval_uses_default_and_clamps(
     monkeypatch, stored, expected
 ) -> None:
-    db = SimpleNamespace(execute=AsyncMock(return_value=_Result(stored)))
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db))
+    db = SimpleNamespace(execute=AsyncMock(return_value=FakeResult(stored)))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db))
 
     assert await alert_checker._get_check_interval_seconds() == expected
 
@@ -62,7 +31,7 @@ async def test_get_check_interval_falls_back_when_database_fails(
     monkeypatch.setattr(
         alert_checker,
         "async_session",
-        lambda: _SessionContext(enter_error=RuntimeError("database offline")),
+        lambda: FakeSessionContext(enter_error=RuntimeError("database offline")),
     )
 
     assert await alert_checker._get_check_interval_seconds() == alert_checker.CHECK_INTERVAL
@@ -76,8 +45,8 @@ async def test_get_check_interval_falls_back_when_database_fails(
 async def test_get_trigger_after_failures_uses_default_and_clamps(
     monkeypatch, stored, expected
 ) -> None:
-    db = SimpleNamespace(execute=AsyncMock(return_value=_Result(stored)))
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db))
+    db = SimpleNamespace(execute=AsyncMock(return_value=FakeResult(stored)))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db))
 
     assert await alert_checker._get_trigger_after_failures() == expected
 
@@ -88,7 +57,7 @@ async def test_get_trigger_after_failures_falls_back_when_database_fails(
     monkeypatch.setattr(
         alert_checker,
         "async_session",
-        lambda: _SessionContext(enter_error=RuntimeError("database offline")),
+        lambda: FakeSessionContext(enter_error=RuntimeError("database offline")),
     )
 
     assert await alert_checker._get_trigger_after_failures() == 2
@@ -105,7 +74,7 @@ async def test_get_trigger_after_failures_falls_back_when_database_fails(
     ],
 )
 async def test_load_route_error_settings_defaults_and_clamps(row, expected) -> None:
-    db = SimpleNamespace(execute=AsyncMock(return_value=_Result(row)))
+    db = SimpleNamespace(execute=AsyncMock(return_value=FakeResult(row)))
 
     assert await alert_checker._load_route_error_settings(db) == expected
 
@@ -312,9 +281,9 @@ async def test_load_server_monitoring_handles_default_and_configured_settings(
 ) -> None:
     host = SimpleNamespace(name="host-a", enabled=True)
     db = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result(settings), _Result(rows=[host])])
+        execute=AsyncMock(side_effect=[FakeResult(settings), FakeResult(None, rows=[host])])
     )
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db))
 
     hosts, thresholds, repeat = await alert_checker._load_server_monitoring()
 
@@ -626,7 +595,6 @@ async def test_check_server_health_clears_pending_forecast_failures_when_disable
     dispatch.assert_not_awaited()
 
 
-
 def _gpu_host(**overrides):
     """An enabled GPU host; only the attributes a test cares about are set."""
     return SimpleNamespace(
@@ -812,7 +780,7 @@ async def test_discard_state_safely_removes_memory_and_db_row(db_session, monkey
         is_healthy=True, trigger_after_failures=1, display_target="GPU A",
     )
     await save_alert_state_to_db(db_session, state, "server_gpu_util", "gpu-a")
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db_session))
 
     await alert_checker._discard_state_safely(state, "server_gpu_util", "gpu-a")
 
@@ -827,7 +795,7 @@ async def test_discard_state_safely_clears_memory_even_when_db_fails(monkeypatch
     state.update("server_gpu_util", "gpu-a", is_healthy=True, trigger_after_failures=1)
     monkeypatch.setattr(
         alert_checker, "async_session",
-        lambda: _SessionContext(enter_error=RuntimeError("db down")),
+        lambda: FakeSessionContext(enter_error=RuntimeError("db down")),
     )
 
     await alert_checker._discard_state_safely(state, "server_gpu_util", "gpu-a")
@@ -840,9 +808,9 @@ async def test_load_service_monitoring_reads_services_and_repeat(monkeypatch) ->
     service = SimpleNamespace(name="orders", enabled=True)
     settings = SimpleNamespace(repeat_alert_after_cycles=4)
     db = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result(settings), _Result(rows=[service])])
+        execute=AsyncMock(side_effect=[FakeResult(settings), FakeResult(None, rows=[service])])
     )
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db))
 
     services, repeat = await alert_checker._load_service_monitoring()
 
@@ -910,8 +878,8 @@ async def test_run_single_check_does_not_resolve_processed_active_route(
     )
     evaluate = AsyncMock()
     monkeypatch.setattr(alert_checker, "_evaluate_route_error_rule", evaluate)
-    db = SimpleNamespace(execute=AsyncMock(return_value=_Result((10.0, 20))))
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db))
+    db = SimpleNamespace(execute=AsyncMock(return_value=FakeResult((10.0, 20))))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db))
 
     await alert_checker.run_single_check(state, trigger_after_failures=1)
 
@@ -957,7 +925,7 @@ async def test_reload_state_on_activation_replaces_stale_memory(db_session, monk
     persisted = AlertStateManager()
     persisted.update("server_down", "web1", is_healthy=False, trigger_after_failures=1)
     await save_alert_state_to_db(db_session, persisted, "server_down", "web1")
-    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db_session))
+    monkeypatch.setattr(alert_checker, "async_session", lambda: FakeSessionContext(db_session))
 
     # The standby's frozen view: an incident long since resolved and deleted.
     state = AlertStateManager()
@@ -971,7 +939,7 @@ async def test_reload_state_on_activation_replaces_stale_memory(db_session, monk
 async def test_reload_state_on_activation_reports_db_failure(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         alert_checker, "async_session",
-        lambda: _SessionContext(enter_error=RuntimeError("db down")),
+        lambda: FakeSessionContext(enter_error=RuntimeError("db down")),
     )
     state = AlertStateManager()
     state.update("server_down", "web1", is_healthy=False, trigger_after_failures=1)

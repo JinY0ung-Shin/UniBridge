@@ -6,11 +6,11 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 from fastapi import HTTPException
 
 from app.routers.gateway import (
+    _comparison_table,
     _extract_scalar,
     _extract_service_keys,
     _extract_timeseries,
@@ -19,17 +19,11 @@ from app.routers.gateway import (
     _service_headers_for_route,
     _validate_consumer,
 )
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess
 from app.services.audit import mask_secret
 from tests.conftest import auth_header
-
-
-def _http_status(code: int, body: str = "boom") -> httpx.HTTPStatusError:
-    req = httpx.Request("GET", "http://apisix")
-    res = httpx.Response(code, request=req, text=body)
-    return httpx.HTTPStatusError("err", request=req, response=res)
+from tests.helpers import http_status_error, sessions
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +540,7 @@ class TestSaveRoute:
         assert data["service_keys"] == [
             {"header_name": "X-Key", "header_value": "***1234"}
         ]
+        assert data["strip_prefix"] is False
         # Verify the body passed to put_resource had plugins injected
         call_body = mock_put.call_args[0][2]
         assert "service_keys" not in call_body
@@ -689,28 +684,6 @@ class TestSaveRoute:
         call_body = mock_put.call_args[0][2]
         assert "rate-limiting" in call_body.get("plugins", {})
         assert "key-auth" in call_body.get("plugins", {})
-
-    async def test_apisix_error_returns_502(self, client, admin_token):
-        # The listing has no existing route (new route) so we proceed to the
-        # put, which fails — the response is the put failure surfaced as 502.
-        with (
-            patch(
-                "app.routers.gateway.apisix_client.list_resources",
-                new_callable=AsyncMock,
-                return_value={"items": []},
-            ),
-            patch(
-                "app.routers.gateway.apisix_client.put_resource",
-                new_callable=AsyncMock,
-                side_effect=ConnectionError("connection refused"),
-            ),
-        ):
-            resp = await client.put(
-                "/admin/gateway/routes/r1",
-                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 502
 
 
 class TestSaveRouteValidation:
@@ -970,7 +943,7 @@ class TestSaveRouteExistingLookup:
             patch(
                 "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(500, "etcd down"),
+                side_effect=http_status_error(500, "etcd down"),
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -1023,27 +996,6 @@ class TestDeleteRoute:
             )
         assert resp.status_code == 204
         assert resp.content == b""
-
-    async def test_apisix_connection_error_returns_502(self, client, admin_token):
-        with patch(
-            "app.routers.gateway.apisix_client.delete_resource",
-            new_callable=AsyncMock,
-            side_effect=ConnectionError("refused"),
-        ):
-            resp = await client.delete(
-                "/admin/gateway/routes/r1", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 502
-
-    async def test_system_managed_llm_admin_route_cannot_be_deleted(
-        self, client, admin_token
-    ):
-        resp = await client.delete(
-            "/admin/gateway/routes/llm-admin", headers=auth_header(admin_token)
-        )
-
-        assert resp.status_code == 400
-        assert "System-managed route" in resp.json()["detail"]
 
 
 class _MockAsyncClient:
@@ -1283,54 +1235,7 @@ class TestRouteTest:
 # ---------------------------------------------------------------------------
 
 
-class TestListUpstreams:
-    async def test_returns_upstreams(self, client, admin_token):
-        mock_data = {
-            "items": [{"id": "u1", "nodes": {"httpbin.org:80": 1}}],
-            "total": 1,
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.list_resources",
-            new_callable=AsyncMock,
-            return_value=mock_data,
-        ):
-            resp = await client.get(
-                "/admin/gateway/upstreams", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 200
-        assert resp.json()["total"] == 1
-
-
-class TestSaveUpstream:
-    async def test_saves_and_returns(self, client, admin_token):
-        upstream = {"id": "u1", "nodes": {"httpbin.org:80": 1}, "type": "roundrobin"}
-        with patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=upstream,
-        ):
-            resp = await client.put(
-                "/admin/gateway/upstreams/u1",
-                json={"nodes": {"httpbin.org:80": 1}, "type": "roundrobin"},
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        assert resp.json()["type"] == "roundrobin"
-
-
 class TestDeleteUpstream:
-    async def test_returns_204(self, client, admin_token):
-        with patch(
-            "app.routers.gateway.apisix_client.delete_resource",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            resp = await client.delete(
-                "/admin/gateway/upstreams/u1", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 204
-        assert resp.content == b""
-
     async def test_clears_lingering_alert_state(self, client, admin_token):
         from app.routers import alerts as alerts_router
         from app.services.alert_state import AlertStateManager
@@ -1606,6 +1511,43 @@ class TestMetricsRoutesComparison:
         data = resp.json()
         assert data["routes"][0]["latency_p50_ms"] is None
 
+    @pytest.mark.parametrize("path", ["routes-comparison", "consumers-comparison"])
+    async def test_infinite_latency_returns_null(self, client, admin_token, path):
+        # histogram_quantile answers +Inf when the quantile lands in the +Inf
+        # bucket; JSON cannot carry it, so the row reads "no value", not a 500.
+        label = "route" if path == "routes-comparison" else "consumer"
+        requests_result = [{"metric": {label: "x"}, "value": [0, "100"]}]
+        p50_result = [{"metric": {label: "x"}, "value": [0, "-Inf"]}]
+        p95_result = [{"metric": {label: "x"}, "value": [0, "+Inf"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], p50_result, p95_result, []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                f"/admin/gateway/metrics/{path}?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200, resp.text
+        row = resp.json()[label + "s"][0]
+        assert row[label] == "x" and row["requests"] == 100
+        assert row["latency_p50_ms"] is None
+        assert row["latency_p95_ms"] is None
+
+    def test_comparison_table_reads_infinite_quantiles_as_none(self):
+        # The table itself holds None, not inf: JSON has no infinity, and the
+        # response serializer is not what should decide that.
+        _total, rows = _comparison_table(
+            (
+                [{"metric": {"route": "x"}, "value": [0, "100"]}],
+                [],
+                [{"metric": {"route": "x"}, "value": [0, "-Inf"]}],
+                [{"metric": {"route": "x"}, "value": [0, "+Inf"]}],
+                [],
+            ),
+            "route",
+            latency_scale=1000,
+        )
+        assert rows[0]["latency_p50_ms"] is None
+        assert rows[0]["latency_p95_ms"] is None
+
     async def test_latency_entry_without_value_treated_as_null(self, client, admin_token):
         requests_result = [
             {"metric": {"route": "x"}, "value": [0, "100"]},
@@ -1853,8 +1795,7 @@ class TestMetricsUsages:
         assert resp.status_code in (401, 403)
 
     async def test_self_scoped_user_forced_to_own_consumer(self, client, user_token, seeded_db):
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
             await db.commit()
         mock = AsyncMock(return_value=[])
@@ -2329,13 +2270,6 @@ class TestConsumerFilter:
             # llm-proxy exclusion is replaced by explicit route filter
             assert 'route!="llm-proxy"' not in q
 
-    async def test_invalid_consumer_returns_400(self, client, admin_token):
-        resp = await client.get(
-            '/admin/gateway/metrics/summary?range=1h&consumer="; drop',
-            headers=auth_header(admin_token),
-        )
-        assert resp.status_code == 400
-
     async def test_no_consumer_excludes_llm_proxy(self, client, admin_token):
         total = [{"value": [0, "10"]}]
         err = [{"value": [0, "0"]}]
@@ -2382,13 +2316,6 @@ class TestConsumerFilter:
             assert 'consumer="alice"' in q
             assert 'route!="llm-proxy"' in q
 
-    async def test_routes_comparison_invalid_consumer_returns_400(self, client, admin_token):
-        resp = await client.get(
-            '/admin/gateway/metrics/routes-comparison?range=1h&consumer=bad name',
-            headers=auth_header(admin_token),
-        )
-        assert resp.status_code == 400
-
 
 # ---------------------------------------------------------------------------
 # Request volume endpoint tests
@@ -2405,9 +2332,10 @@ class TestMetricsRequestsTotal:
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 2
-        assert data[0]["value"] == 150.0
+        assert resp.json() == [
+            {"timestamp": 1000, "value": 150.0},
+            {"timestamp": 1060, "value": 200.0},
+        ]
         # Verify increase() is used instead of rate()
         assert "increase(" in mock.call_args.args[0]
 
@@ -2604,8 +2532,7 @@ class TestPermissions:
     async def test_user_monitoring_forced_to_own_consumer(self, client, user_token, seeded_db):
         """A self-scoped user's PromQL is locked to their own consumer; a
         ?consumer= naming someone else is ignored (no cross-tenant leak)."""
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
             await db.commit()
         empty = [{"value": [0, "0"]}]

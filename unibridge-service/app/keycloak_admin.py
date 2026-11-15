@@ -29,8 +29,7 @@ class KeycloakAdminClient:
         self._token: str | None = None
         self._token_expires_at: float = 0.0
         from app.config import settings as _settings
-        ssl_verify: str | bool = _settings.SSL_CA_CERT_PATH or _settings.SSL_VERIFY
-        self._client = httpx.AsyncClient(timeout=10.0, verify=ssl_verify)
+        self._client = httpx.AsyncClient(timeout=10.0, verify=_settings.httpx_verify)
         self._token_lock = asyncio.Lock()
 
     async def close(self) -> None:

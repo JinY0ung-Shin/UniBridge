@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import delete as sa_delete, insert as sa_insert, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AlertHistory,
@@ -19,8 +19,18 @@ from app.models import (
     S3Connection,
 )
 from app.routers import alerts as alerts_router
+from app.services.alert_owner_dispatcher import ASSIGNEE_RESOURCE_TYPES
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
+from tests.helpers import sessions
+
+
+def test_every_assignable_resource_type_has_one_source():
+    """Each type the assignee API accepts is listed from the meta DB or APISIX."""
+    db_types = set(alerts_router.RESOURCE_ID_COLUMNS)
+    apisix_types = set(alerts_router.APISIX_RESOURCE_TYPES)
+    assert not db_types & apisix_types
+    assert db_types | apisix_types == ASSIGNEE_RESOURCE_TYPES
 
 
 WEBHOOK = "https://hooks.example.com/svc"
@@ -339,7 +349,7 @@ async def test_delete_mail_channel_in_use_returns_409(client, admin_token):
 async def test_update_alert_settings_invalid_channel_does_not_create_settings_row(
     client, admin_token, seeded_db,
 ):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         await db.execute(sa_delete(AlertSettings))
         await db.commit()
@@ -583,7 +593,7 @@ async def test_recipients_test_rejects_empty_emails(client, admin_token):
 # ── Resource Owners (담당자) ───────────────────────────────────────────────────
 
 async def test_resource_owner_upsert_for_db(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(DBConnection(
             alias="orders-db",
@@ -634,7 +644,7 @@ async def test_resource_owner_upsert_for_db(client, admin_token, seeded_db):
 
 
 async def test_resource_owner_can_disable_alerts_without_assignees(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(DBConnection(
             alias="quiet-db",
@@ -677,7 +687,7 @@ async def test_resource_owner_can_disable_alerts_without_assignees(client, admin
 
 
 async def test_resource_owner_empty_emails_clears_assignees(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(DBConnection(
             alias="clear-db",
@@ -722,7 +732,7 @@ async def test_resource_owner_rejects_unknown_resource(client, admin_token, seed
 
 
 async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(DBConnection(
             alias="race-db",
@@ -778,8 +788,7 @@ async def test_resource_owner_rejects_unsupported_resource_type(client, admin_to
 
 
 async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(NASConnection(alias="reports-nas", base_path="/mnt/nas/reports"))
         await db.commit()
 
@@ -825,8 +834,7 @@ async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(clien
 
 
 async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(NASConnection(alias="reports-nas", base_path="/mnt/nas/reports"))
         db.add(ResourceOwner(
             resource_type="route",
@@ -899,8 +907,7 @@ async def test_resource_owner_list_returns_503_when_apisix_fails(client, admin_t
 async def test_resource_owner_permissions_use_alert_read_and_write(
     client, admin_token, alerts_reader_token, seeded_db,
 ):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(S3Connection(
             alias="reports-bucket",
             endpoint_url="https://s3.example.com",
@@ -930,9 +937,8 @@ async def test_resource_owner_permissions_use_alert_read_and_write(
 # ── History ─────────────────────────────────────────────────────────────────
 
 async def test_history_filters(client, admin_token, seeded_db):
-    SessionLocal = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     base = datetime(2026, 4, 30, 10, 0, tzinfo=timezone.utc)
-    async with SessionLocal() as db:
+    async with sessions(seeded_db)() as db:
         for i in range(4):
             db.add(AlertHistory(
                 alert_type="triggered" if i < 2 else "resolved",

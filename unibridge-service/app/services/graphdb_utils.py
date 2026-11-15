@@ -4,6 +4,8 @@ from urllib.parse import quote
 
 import httpx
 
+from app.services.capped_read import read_capped
+
 
 class GraphDBResponseTooLarge(Exception):
     """Raised when an upstream GraphDB response exceeds the configured cap."""
@@ -30,11 +32,9 @@ async def read_capped_response(resp: httpx.Response, max_bytes: int) -> bytes:
         except ValueError:
             pass
 
-    buf = bytearray()
-    async for chunk in resp.aiter_bytes():
-        buf.extend(chunk)
-        if len(buf) > max_bytes:
-            raise GraphDBResponseTooLarge(
-                "GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES"
-            )
-    return bytes(buf)
+    data = await read_capped(resp.aiter_bytes(), max_bytes)
+    if data is None:
+        raise GraphDBResponseTooLarge(
+            "GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES"
+        )
+    return data

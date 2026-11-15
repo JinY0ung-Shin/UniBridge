@@ -18,13 +18,13 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import config as app_config
 from app.config import settings
 from app.db_types import utcnow
 from app.models import AdminAuditLog, UploadRelayFile
 from app.routers import upload_relay as relay_router
+from app.services import active_color
 from app.services import upload_relay as relay
 from tests.conftest import auth_header
 
@@ -81,11 +81,6 @@ def noah_headers(method: str, path: str, *, secret: str = SECRET, at: float | No
 def configured(monkeypatch):
     monkeypatch.setattr(settings, "UPLOAD_RELAY_SECRET", SECRET)
     monkeypatch.setattr(relay_router, "_disabled_warning_logged", False)
-
-
-@pytest.fixture
-def db_factory(seeded_db):
-    return async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
 
 
 @pytest.fixture
@@ -939,8 +934,8 @@ async def test_the_purge_loop_runs_only_on_the_active_color(db_factory, monkeypa
         if len(sleeps) == 4:
             raise Stop
 
-    monkeypatch.setattr(relay, "is_active_instance", is_active)
-    monkeypatch.setattr(relay.asyncio, "sleep", sleep)
+    monkeypatch.setattr(active_color, "is_active_instance", is_active)
+    monkeypatch.setattr(active_color.asyncio, "sleep", sleep)
     with pytest.raises(Stop):
         await relay.run_purge_loop(interval_seconds=7, first_delay_seconds=3)
 
@@ -971,8 +966,8 @@ async def test_a_failing_purge_pass_does_not_end_the_loop(monkeypatch, caplog):
         return True
 
     monkeypatch.setattr(relay, "run_purge_once", failing_pass)
-    monkeypatch.setattr(relay, "is_active_instance", is_active)
-    monkeypatch.setattr(relay.asyncio, "sleep", sleep)
+    monkeypatch.setattr(active_color, "is_active_instance", is_active)
+    monkeypatch.setattr(active_color.asyncio, "sleep", sleep)
     with caplog.at_level(logging.ERROR, logger=relay.__name__), pytest.raises(Stop):
         await relay.run_purge_loop()
 

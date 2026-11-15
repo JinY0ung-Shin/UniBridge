@@ -7,9 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import event, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.auth import create_token, invalidate_permission_cache
 from app.models import (
     AdminAuditLog,
     AlertChannel,
@@ -38,6 +36,7 @@ from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER, MASTER_ACCESS
 from app.services.settings_manager import settings_manager
 from tests.conftest import auth_header
+from tests.helpers import make_role_token, sessions
 
 DB_PASSWORD = "super-secret-db-password"
 S3_ACCESS_KEY = "AKIAEXAMPLEACCESSKEY"
@@ -107,20 +106,10 @@ def restore_settings_manager():
 @pytest.fixture
 async def config_writer_token(seeded_db):
     """A non-admin role holding only the config transfer permissions."""
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
-        role = Role(name="configwriter", description="Config transfer", is_system=False)
-        db.add(role)
-        await db.flush()
-        for perm in ("admin.config.read", "admin.config.write"):
-            db.add(RolePermission(role_id=role.id, permission=perm))
-        await db.commit()
-    await invalidate_permission_cache()
-    return create_token("testconfigwriter", "configwriter")
-
-
-def factory_for(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    return await make_role_token(
+        seeded_db, "configwriter", ("admin.config.read", "admin.config.write"),
+        description="Config transfer",
+    )
 
 
 def export_doc(**sections) -> dict:
@@ -145,7 +134,7 @@ def rows_for(payload: dict, section: str) -> list[dict]:
 
 
 async def seed_full_config(engine) -> None:
-    async with factory_for(engine)() as db:
+    async with sessions(engine)() as db:
         db.add(DBConnection(
             alias="analytics", db_type="postgres", host="db.internal", port=5432,
             database="analytics", username="reader",
@@ -203,7 +192,7 @@ async def seed_network_map(engine) -> None:
     """Regions seoul/busan; app1 (seoul, verified, linked to web1), db.internal (busan,
     an agent's unverified record), an opening each from a host and a CIDR, port
     usage, and app1 as the platform host."""
-    async with factory_for(engine)() as db:
+    async with sessions(engine)() as db:
         seoul = Region(name="seoul", description="DC1", cidrs=json.dumps(["10.1.0.0/16"]))
         busan = Region(name="busan", cidrs=json.dumps(["10.2.0.0/16"]))
         db.add_all([seoul, busan])
@@ -285,7 +274,7 @@ def api_key(name: str, routes: list[str], *, expired: bool = False) -> ApiKeyAcc
 
 
 async def seed_api_keys(engine, *keys: ApiKeyAccess) -> None:
-    async with factory_for(engine)() as db:
+    async with sessions(engine)() as db:
         db.add_all(keys)
         await db.commit()
 
@@ -313,7 +302,7 @@ class TestExport:
             assert secret not in serialized, f"{secret!r} leaked into the export"
 
         # The stored ciphertext must not travel either.
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             conn = (await db.execute(select(DBConnection))).scalar_one()
             s3 = (await db.execute(select(S3Connection))).scalar_one()
         assert conn.password_encrypted not in serialized
@@ -411,7 +400,7 @@ class TestExport:
         writes = [s for s in executed if s.startswith(("INSERT", "UPDATE", "DELETE"))]
         assert writes == []
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             assert (await db.execute(select(AlertSettings))).scalars().all() == []
 
         # The absent singleton still exports as the model's own defaults.
@@ -539,7 +528,7 @@ class TestDryRun:
         assert body["summary"] == {"create": 3, "update": 0, "skip": 0, "error": 0}
         assert {row["action"] for row in body["results"]} == {"create"}
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             assert (await db.execute(select(Role).where(Role.name == "analyst"))).scalar_one_or_none() is None
             assert (await db.execute(select(MonitoredHost))).scalars().all() == []
             assert (await db.execute(select(AdminAuditLog))).scalars().all() == []
@@ -555,7 +544,7 @@ class TestDryRun:
         assert row["action"] == "error"
         assert "address" in row["reason"]
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             assert (await db.execute(select(MonitoredHost))).scalars().all() == []
 
     async def test_old_export_with_reserved_labels_imports_without_them(
@@ -571,7 +560,7 @@ class TestDryRun:
         row = rows_for(resp.json(), "monitored_hosts")[0]
         assert row["action"] == "create"
         assert row["reason"] == "dropped labels not allowed on a monitored host: a-b, host, job"
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             host = (await db.execute(select(MonitoredHost))).scalar_one()
             assert json.loads(host.labels) == {"env": "prod"}
 
@@ -588,7 +577,7 @@ class TestApply:
         assert resp.status_code == 200, resp.text
         assert resp.json()["summary"] == {"create": 3, "update": 0, "skip": 0, "error": 0}
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             role = (await db.execute(select(Role).where(Role.name == "analyst"))).scalar_one()
             grants = (await db.execute(
                 select(RolePermission.permission).where(RolePermission.role_id == role.id)
@@ -603,7 +592,7 @@ class TestApply:
         resp = await do_import(client, admin_token, dry_run=False, sections=sections, doc=doc)
         assert resp.json()["summary"] == {"create": 0, "update": 3, "skip": 0, "error": 0}
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             hosts = (await db.execute(select(MonitoredHost))).scalars().all()
         assert [h.address for h in hosts] == ["10.0.0.6:9100"]
 
@@ -619,7 +608,7 @@ class TestApply:
         row = rows_for(resp.json(), "roles")[0]
         assert (row["action"], row["reason"]) == ("create", None)
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             role = (await db.execute(select(Role).where(Role.name == "analyst"))).scalar_one()
             grants = (await db.execute(
                 select(RolePermission.permission).where(RolePermission.role_id == role.id)
@@ -648,7 +637,7 @@ class TestApply:
         assert resp.status_code == 200, resp.text
         assert resp.json()["summary"]["error"] == 0
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             conn = (await db.execute(select(DBConnection))).scalar_one()
             nas = (await db.execute(
                 select(NASConnection).where(NASConnection.alias == "share2")
@@ -683,7 +672,7 @@ class TestApply:
         )
         assert resp.status_code == 200, resp.text
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             channel = (await db.execute(
                 select(AlertChannel).where(AlertChannel.name == "mail-b")
             )).scalar_one()
@@ -696,7 +685,7 @@ class TestApply:
         self, client, admin_token, seeded_db, apisix_state
     ):
         await seed_full_config(seeded_db)
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             before = (await db.execute(select(AlertSettings))).scalar_one().mail_channel_id
 
         doc = export_doc(alert_settings={"mail_channel_id": 42, "mail_channel_name": "ghost",
@@ -706,7 +695,7 @@ class TestApply:
         assert row["action"] == "update"
         assert "ghost" in row["reason"]
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             settings_row = (await db.execute(select(AlertSettings))).scalar_one()
         assert settings_row.mail_channel_id == before
         assert settings_row.check_interval_seconds == 90
@@ -726,7 +715,7 @@ class TestApply:
         )
         assert resp.status_code == 200, resp.text
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             host = (await db.execute(
                 select(MonitoredHost).where(MonitoredHost.name == "web1")
             )).scalar_one()
@@ -808,7 +797,7 @@ class TestRoundTrip:
         doc = (await client.get("/admin/config/export", headers=auth_header(admin_token))).json()
         await do_import(client, admin_token, dry_run=False, sections=list(doc["sections"]), doc=doc)
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             conn = (await db.execute(select(DBConnection))).scalar_one()
             channel = (await db.execute(select(AlertChannel))).scalar_one()
         assert decrypt_password(conn.password_encrypted) == DB_PASSWORD
@@ -944,7 +933,7 @@ class TestSkips:
         row = rows_for(resp.json(), "roles")[0]
         assert (row["action"], row["reason"]) == ("skip", "system role (reseeded at boot)")
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one()
             grants = (await db.execute(
                 select(RolePermission.permission).where(RolePermission.role_id == role.id)
@@ -959,7 +948,7 @@ class TestSkips:
         row = rows_for(resp.json(), "roles")[0]
         assert (row["action"], row["reason"]) == ("skip", "cannot modify your own role")
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             role = (await db.execute(select(Role).where(Role.name == "configwriter"))).scalar_one()
             grants = (await db.execute(
                 select(RolePermission.permission).where(RolePermission.role_id == role.id)
@@ -978,7 +967,7 @@ class TestSkips:
         assert row["action"] == "error"
         assert "db_type mismatch" in row["reason"]
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             conn = (await db.execute(select(DBConnection))).scalar_one()
         assert (conn.db_type, conn.host) == ("postgres", "db.internal")
 
@@ -996,7 +985,7 @@ class TestSkips:
         )
         assert {row["action"] for row in resp.json()["results"]} == {"error"}
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             conn = (await db.execute(select(DBConnection))).scalar_one()
             s3 = (await db.execute(select(S3Connection))).scalar_one()
         assert conn.port == 5432
@@ -1021,7 +1010,7 @@ class TestSkips:
             assert row["action"] == "skip"
             assert row["reason"] == "secrets required — create manually first"
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             assert (await db.execute(select(DBConnection))).scalars().all() == []
             assert (await db.execute(select(S3Connection))).scalars().all() == []
 
@@ -1299,7 +1288,7 @@ class TestAlertChannelWebhookUrl:
         assert row["action"] == "update"
         assert row["reason"] == "webhook URL unchanged"
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             channel = (await db.execute(select(AlertChannel))).scalar_one()
         assert channel.webhook_url == CHANNEL_WEBHOOK_URL
         assert channel.payload_template == '{"v":2}'
@@ -1316,7 +1305,7 @@ class TestAlertChannelWebhookUrl:
         assert row["action"] == "error"
         assert "webhook_url not in export" in row["reason"]
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             channels = (await db.execute(select(AlertChannel))).scalars().all()
         assert channels == []
 
@@ -1343,7 +1332,7 @@ class TestAlertChannelWebhookUrl:
         assert resp.status_code == 200, resp.text
         assert rows_for(resp.json(), "alert_channels")[0]["reason"] is None
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             channel = (await db.execute(select(AlertChannel))).scalar_one()
         assert channel.webhook_url == "https://hooks.example.com/moved"
 
@@ -1365,7 +1354,7 @@ class TestErrorIsolation:
         body = resp.json()
         assert body["summary"] == {"create": 2, "update": 0, "skip": 0, "error": 1}
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             hosts = (await db.execute(select(MonitoredHost).order_by(MonitoredHost.name))).scalars().all()
         assert [h.name for h in hosts] == ["good1", "good2"]
 
@@ -1417,7 +1406,7 @@ class TestAudit:
         )
         assert resp.status_code == 200, resp.text
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             logs = (await db.execute(select(AdminAuditLog))).scalars().all()
         by_type = {log.resource_type: log for log in logs}
 
@@ -1437,7 +1426,7 @@ class TestAudit:
             client, admin_token, dry_run=True,
             sections=["roles", "monitored_hosts", "routes"], doc=TestDryRun.sample_doc(),
         )
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             logs = (await db.execute(select(AdminAuditLog))).scalars().all()
         assert logs == []
 
@@ -1451,7 +1440,7 @@ class TestAudit:
         }])
         await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             logs = (await db.execute(select(AdminAuditLog))).scalars().all()
         serialized = json.dumps([{"before": log.before, "after": log.after} for log in logs])
         assert ROUTE_SERVICE_KEY not in serialized
@@ -1498,7 +1487,7 @@ def network_doc(**overrides) -> dict:
 
 
 async def network_rows(engine) -> dict[str, list]:
-    async with factory_for(engine)() as db:
+    async with sessions(engine)() as db:
         return {
             "regions": list((await db.execute(select(Region).order_by(Region.name))).scalars()),
             "hosts": list((await db.execute(select(NetworkHost).order_by(NetworkHost.name))).scalars()),
@@ -1558,7 +1547,7 @@ class TestNetworkMap:
         assert body["summary"] == {"create": 7, "update": 1, "skip": 0, "error": 0}, body["results"]
         rows = await network_rows(seeded_db)
         assert rows["regions"] == [] and rows["hosts"] == [] and rows["openings"] == []
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             assert (await db.execute(select(AdminAuditLog))).scalars().all() == []
 
     async def test_apply_creates_the_map_and_carries_verification(
@@ -1589,7 +1578,7 @@ class TestNetworkMap:
         assert rows["usages"][0].host_id == hosts["db1"].id
         assert rows["settings"].platform_host_id == hosts["app1"].id
 
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             logs = (await db.execute(select(AdminAuditLog))).scalars().all()
         audited = {log.resource_type for log in logs}
         assert {"network_region", "network_host", "firewall_opening", "port_usage",
@@ -1729,7 +1718,7 @@ class TestNetworkMap:
     async def test_monitored_link_and_platform_host_resolve_by_name(
         self, client, admin_token, seeded_db, apisix_state
     ):
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             db.add(MonitoredHost(name="mon-a", address="10.1.0.10:9100"))
             await db.commit()
         doc = network_doc()
@@ -1746,7 +1735,7 @@ class TestNetworkMap:
 
         rows = await network_rows(seeded_db)
         by_name = {h.name: h for h in rows["hosts"]}
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             mon = (await db.execute(select(MonitoredHost).where(MonitoredHost.name == "mon-a"))).scalar_one()
         assert by_name["app1"].monitored_host_id == mon.id
         assert by_name["db1"].monitored_host_id is None
@@ -1802,7 +1791,7 @@ async def test_template_sample_round_trips_and_old_files_keep_it(
     client, admin_token, seeded_db, apisix_state
 ):
     await seed_full_config(seeded_db)
-    async with factory_for(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         template = (await db.execute(select(QueryTemplate))).scalar_one()
         template.sql = "SELECT * FROM orders WHERE day = :day"
         template.sample_params = '{"day": "2026-11-01"}'
@@ -1823,7 +1812,7 @@ async def test_template_sample_round_trips_and_old_files_keep_it(
             doc=export_doc(query_templates=[{**old_item, "name": "Renamed"}]),
         )
         assert resp.json()["summary"]["error"] == 0, resp.text
-        async with factory_for(seeded_db)() as db:
+        async with sessions(seeded_db)() as db:
             template = (await db.execute(select(QueryTemplate))).scalar_one()
             assert template.name == "Renamed"
             assert json.loads(template.sample_params) == {"day": "2026-11-01"}
@@ -1838,7 +1827,7 @@ async def test_template_sample_round_trips_and_old_files_keep_it(
         )
         assert resp.json()["summary"]["error"] == 0, resp.text
         execute_query.assert_not_awaited()
-    async with factory_for(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         template = (await db.execute(select(QueryTemplate))).scalar_one()
         assert json.loads(template.sample_params) == {"day": "2026-12-01"}
         assert template.monitor_enabled is True

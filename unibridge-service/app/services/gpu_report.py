@@ -24,22 +24,19 @@ checker cycle, which is also how the report catches up after downtime.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
+from app.db_types import KST, as_utc
 from app.models import AlertSettings, MonitoredHost
 from app.services import server_monitor
-from app.services.alert_mutes import _as_utc, load_mute_index
+from app.services.alert_mutes import load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 
 logger = logging.getLogger(__name__)
-
-# Korea Standard Time as a fixed UTC+9 offset — Korea has no DST, so this needs
-# no zoneinfo lookup and therefore no tzdata in the container image.
-KST = timezone(timedelta(hours=9))
 
 RULE_TYPE = "server_gpu_underutil"
 MONITOR_LABEL = "서버 GPU 목표 사용률(일일)"
@@ -56,12 +53,12 @@ def is_report_due(
     at 08:00 KST blocks re-runs for the rest of that KST day regardless of where
     the UTC date boundary falls inside it.
     """
-    now_kst = _as_utc(now_utc).astimezone(KST)
+    now_kst = as_utc(now_utc).astimezone(KST)
     if now_kst.hour < report_hour_kst:
         return False
     if last_sent is None:
         return True
-    return _as_utc(last_sent).astimezone(KST).date() < now_kst.date()
+    return as_utc(last_sent).astimezone(KST).date() < now_kst.date()
 
 
 def _eligible_hosts(
@@ -102,7 +99,7 @@ async def maybe_send_gpu_util_report(*, now: datetime | None = None) -> int | No
     retries next cycle; a per-host delivery failure does not, because
     ``dispatch_alert`` records it and swallows it.
     """
-    reference = _as_utc(now) if now is not None else datetime.now(timezone.utc)
+    reference = as_utc(now) if now is not None else datetime.now(timezone.utc)
 
     async with async_session() as db:
         settings_row = (

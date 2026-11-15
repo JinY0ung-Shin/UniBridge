@@ -2,43 +2,21 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AdminAuditLog, ApiKeyAccess, MonitoredHost, NetworkHost
-from app.services import network_map
 from tests.conftest import auth_header
+from tests.helpers import HOSTS_A2_B1, REGIONS_AB, seed_network, sessions
 
 
-@pytest.fixture(autouse=True)
-def _no_gateway(monkeypatch):
-    monkeypatch.setattr(
-        network_map.apisix_client, "list_resources", AsyncMock(return_value={"items": []})
-    )
-    network_map.clear_gateway_cache()
-    yield
-    network_map.clear_gateway_cache()
-
-
-def _session(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+pytestmark = pytest.mark.usefixtures("no_gateway")
 
 
 async def _setup(client, h) -> dict[str, int]:
     """Regions A (10.1/16) and B (10.2/16); a1, a2 in A, b1 in B."""
-    ids: dict[str, int] = {}
-    for name, cidr in (("A", "10.1.0.0/16"), ("B", "10.2.0.0/16")):
-        resp = await client.post("/network/regions", headers=h, json={"name": name, "cidrs": [cidr]})
-        assert resp.status_code == 201, resp.text
-        ids[name] = resp.json()["id"]
-    for name, ip in (("a1", "10.1.0.1"), ("a2", "10.1.0.2"), ("b1", "10.2.0.1")):
-        resp = await client.post("/network/hosts", headers=h, json={"name": name, "ip": ip})
-        assert resp.status_code == 201, resp.text
-        ids[name] = resp.json()["id"]
-    return ids
+    return await seed_network(client, h, REGIONS_AB, HOSTS_A2_B1)
 
 
 async def _external(client, h, name="knox", ip="10.2.9.9") -> dict:
@@ -105,7 +83,7 @@ async def test_opening_to_an_unknown_ip_creates_an_external_host(client, admin_t
     assert again.status_code == 201, again.text
     assert again.json()["dst_host_id"] == opening["dst_host_id"]
 
-    async with _session(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         logs = (await db.execute(select(AdminAuditLog))).scalars().all()
     assert any(
         log.resource_type == "network_host" and log.resource_id == "dst-172.20.0.5" for log in logs
@@ -178,7 +156,7 @@ async def test_ipv6_destination_name_has_no_colons(client, admin_token):
 async def test_agent_created_destination_is_unverified(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     await _setup(client, h)
-    async with _session(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         db.add(ApiKeyAccess(consumer_name="bot", allowed_routes=json.dumps(["network-write-api"])))
         await db.commit()
     resp = await client.post(
@@ -282,7 +260,7 @@ async def test_external_host_cannot_be_the_platform_or_monitored(client, admin_t
     to_ext = await client.put(f"/network/hosts/{ids['a1']}", headers=h, json={"kind": "external"})
     assert to_ext.status_code == 422
 
-    async with _session(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         mon = MonitoredHost(name="web1", address="10.2.9.9:9100")
         db.add(mon)
         await db.commit()
@@ -301,7 +279,7 @@ async def test_external_host_cannot_be_the_platform_or_monitored(client, admin_t
     result = (await client.post("/network/hosts/import-monitored", headers=h)).json()
     assert result["linked"] == [] and result["created"] == []
     assert "external host knox" in result["skipped"][0]["reason"]
-    async with _session(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         row = await db.get(NetworkHost, ext["id"])
         assert row.monitored_host_id is None
 
@@ -309,7 +287,7 @@ async def test_external_host_cannot_be_the_platform_or_monitored(client, admin_t
 async def test_linked_host_must_be_unlinked_before_it_turns_external(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     ids = await _setup(client, h)
-    async with _session(seeded_db)() as db:
+    async with sessions(seeded_db)() as db:
         mon = MonitoredHost(name="web1", address="10.2.0.1:9100")
         db.add(mon)
         await db.commit()

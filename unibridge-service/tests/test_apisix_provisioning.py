@@ -9,6 +9,7 @@ import pytest
 
 import app.main as app_main
 from app.main import _put_upstream_if_unclaimed
+from tests.helpers import http_status_error
 
 
 BODY = {
@@ -16,15 +17,6 @@ BODY = {
     "type": "roundrobin",
     "nodes": {"unibridge-service-blue:8000": 1},
 }
-
-
-def _status_error(status_code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://apisix/apisix/admin/upstreams/unibridge-service")
-    return httpx.HTTPStatusError(
-        f"{status_code}",
-        request=request,
-        response=httpx.Response(status_code, request=request),
-    )
 
 
 @pytest.fixture
@@ -63,7 +55,7 @@ async def test_puts_when_upstream_is_absent(apisix):
     puts, on_get = apisix
 
     async def _get(kind, rid):
-        raise _status_error(404)
+        raise http_status_error(404)
 
     on_get(_get)
 
@@ -141,7 +133,7 @@ async def test_non_404_admin_error_propagates_instead_of_putting(apisix):
     puts, on_get = apisix
 
     async def _get(kind, rid):
-        raise _status_error(503)
+        raise http_status_error(503)
 
     on_get(_get)
 

@@ -11,12 +11,11 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ApiKeyAccess
 from app.routers import query_metrics
 from app.routers.query_metrics import _gated, _sel
 from tests.conftest import auth_header
+from tests.helpers import insert_api_key
 
 _INSTANT = "app.routers.query_metrics.prometheus_client.instant_query"
 _RANGE = "app.routers.query_metrics.prometheus_client.range_query"
@@ -61,15 +60,6 @@ def _assert_gated(expr: str) -> None:
         depth += {"(": 1, ")": -1}.get(ch, 0)
         assert depth >= 0, expr
     assert depth == 0, expr
-
-
-async def _add_api_key(seeded_db, consumer_name: str, owner: str | None = None) -> None:
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
-        db.add(ApiKeyAccess(consumer_name=consumer_name, owner=owner))
-        await db.commit()
 
 
 class TestSelectorBuilders:
@@ -448,7 +438,6 @@ class TestDatabasesComparison:
             assert 'db_alias="' not in q
 
 
-
 class TestConsumersComparison:
     async def test_topk_wraps_gated_expression_and_sentinels(self, client, admin_token):
         queries = [
@@ -661,7 +650,7 @@ class TestSelfScope:
     async def test_every_endpoint_forces_the_callers_key(
         self, client, user_token, seeded_db, path
     ):
-        await _add_api_key(seeded_db, "self_testuser", owner="testuser")
+        await insert_api_key(seeded_db, "self_testuser", owner="testuser")
         instant = AsyncMock(return_value=[])
         range_q = AsyncMock(return_value=[])
         with patch(_INSTANT, instant), patch(_RANGE, range_q):

@@ -373,9 +373,7 @@ async def get_api_key_usage(
     try:
         rows = await prometheus_client.instant_query(_usage_query("7d"))
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
+        raise prometheus_client.http_error(exc)
     counts = _requests_by_consumer(rows)
     return ApiKeyUsageResponse(keys={
         name: ApiKeyUsage(requests_7d=counts.get(name, 0)) for name in names

@@ -2,60 +2,29 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.auth import create_token, invalidate_permission_cache
-from app.models import ApiKeyAccess, DBConnection, MonitoredHost, Role, RolePermission
+from app.models import DBConnection, MonitoredHost
 from app.services import network_map
 from tests.conftest import auth_header
+from tests.helpers import HOSTS_A2_B1, REGIONS_AB, insert_api_key, make_role_token, seed_network, sessions
 
 
-@pytest.fixture(autouse=True)
-def _no_gateway(monkeypatch):
-    """Discovery reads APISIX upstreams; tests feed them instead of dialing a gateway."""
-    upstreams = AsyncMock(return_value={"items": []})
-    monkeypatch.setattr(network_map.apisix_client, "list_resources", upstreams)
-    network_map.clear_gateway_cache()
-    yield upstreams
-    network_map.clear_gateway_cache()
+pytestmark = pytest.mark.usefixtures("no_gateway")
 
 
 async def _api_key(seeded_db, name: str, routes: list[str]) -> dict[str, str]:
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
-        db.add(ApiKeyAccess(consumer_name=name, allowed_routes=json.dumps(routes)))
-        await db.commit()
-    return {"X-Consumer-Username": name}
+    return await insert_api_key(seeded_db, name, allowed_routes=routes)
 
 
 async def _role_token(seeded_db, perms: list[str]) -> dict[str, str]:
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
-        role = Role(name="netviewer", description="", is_system=False)
-        db.add(role)
-        await db.flush()
-        for perm in perms:
-            db.add(RolePermission(role_id=role.id, permission=perm))
-        await db.commit()
-    await invalidate_permission_cache()
-    return auth_header(create_token("viewer", "netviewer"))
+    return auth_header(await make_role_token(seeded_db, "netviewer", perms, username="viewer"))
 
 
 async def _setup(client, h) -> dict[str, int]:
     """Two regions (with CIDRs) and three hosts: a1, a2 in A, b1 in B."""
-    ids: dict[str, int] = {}
-    for name, cidr in (("A", "10.1.0.0/16"), ("B", "10.2.0.0/16")):
-        resp = await client.post("/network/regions", headers=h, json={"name": name, "cidrs": [cidr]})
-        assert resp.status_code == 201, resp.text
-        ids[name] = resp.json()["id"]
-    for name, ip in (("a1", "10.1.0.1"), ("a2", "10.1.0.2"), ("b1", "10.2.0.1")):
-        resp = await client.post("/network/hosts", headers=h, json={"name": name, "ip": ip})
-        assert resp.status_code == 201, resp.text
-        ids[name] = resp.json()["id"]
-    return ids
+    return await seed_network(client, h, REGIONS_AB, HOSTS_A2_B1)
 
 
 # ── Regions & hosts ─────────────────────────────────────────────────────────
@@ -259,16 +228,15 @@ async def test_in_use_flags_and_overview_counts(client, admin_token):
     assert [u["service_name"] for u in detail["usages"]] == ["orders-api"]
 
 
-async def test_discovered_usages_and_platform_reachability(client, admin_token, seeded_db, _no_gateway):
+async def test_discovered_usages_and_platform_reachability(client, admin_token, seeded_db, no_gateway):
     h = auth_header(admin_token)
     ids = await _setup(client, h)
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
+    async with sessions(seeded_db)() as db:
         db.add(DBConnection(alias="orders", db_type="postgres", host="10.2.0.1", port=5432,
                             database="orders", username="u", password_encrypted="x"))
         db.add(MonitoredHost(name="node-b1", address="b1:39100"))
         await db.commit()
-    _no_gateway.return_value = {"items": [{"id": "u1", "name": "orders-api", "nodes": {"10.2.0.1:8000": 1}}]}
+    no_gateway.return_value = {"items": [{"id": "u1", "name": "orders-api", "nodes": {"10.2.0.1:8000": 1}}]}
 
     usages = (await client.get("/network/port-usages", headers=h, params={"source": "auto"})).json()
     assert {(u["port"], u["auto_kind"]) for u in usages} == {
@@ -285,7 +253,7 @@ async def test_discovered_usages_and_platform_reachability(client, admin_token, 
     overview = (await client.get("/network/overview", headers=h)).json()
     assert overview["unreachable_usages"] == 2 and overview["auto_sources_failed"] == []
 
-    _no_gateway.side_effect = RuntimeError("apisix down")
+    no_gateway.side_effect = RuntimeError("apisix down")
     network_map.clear_gateway_cache()  # past the 30s cache
     overview = (await client.get("/network/overview", headers=h)).json()
     assert overview["auto_sources_failed"] == ["gateway_upstream"]
@@ -294,8 +262,7 @@ async def test_discovered_usages_and_platform_reachability(client, admin_token, 
 async def test_import_monitored_servers_creates_and_links(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     await _setup(client, h)
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
+    async with sessions(seeded_db)() as db:
         db.add_all([
             MonitoredHost(name="b1-node", address="10.2.0.1:39100"),  # IP of b1 → link
             MonitoredHost(name="newbox", address="10.1.9.9:39100"),  # new, region A by CIDR
@@ -446,8 +413,7 @@ async def test_host_names_cannot_shadow_ips_or_differ_only_in_case(client, admin
 async def test_non_master_keys_see_discovered_usages_without_config_names(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     await _setup(client, h)
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
+    async with sessions(seeded_db)() as db:
         db.add(DBConnection(alias="secret-orders", db_type="postgres", host="10.2.0.1", port=5432,
                             database="orders", username="u", password_encrypted="x"))
         await db.commit()

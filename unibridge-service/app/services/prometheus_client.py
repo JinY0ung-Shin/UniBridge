@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
 import httpx
+from fastapi import HTTPException, status
 
 from app.config import settings
 
@@ -90,6 +92,45 @@ async def range_query(
         logger.warning("Prometheus range query failed: %s", data)
         return []
     return data.get("data", {}).get("result", [])
+
+
+def http_error(exc: Exception) -> HTTPException:
+    """The 502 a monitoring endpoint raises when its Prometheus query fails."""
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+    )
+
+
+def map_by_label(
+    results: list[dict[str, Any]] | None,
+    label_name: str,
+    *,
+    empty: str | None = None,
+    drop_nan: bool = False,
+) -> dict[str, float]:
+    """Instant-query result → {label value: float}.
+
+    Items whose label is missing or empty are skipped, or filed under ``empty``
+    when given. Items without a parseable value are skipped. NaN values are kept
+    for the caller unless ``drop_nan``; ±Inf is always kept. A later item with
+    the same label value replaces an earlier one.
+    """
+    out: dict[str, float] = {}
+    for item in results or []:
+        key = item.get("metric", {}).get(label_name) or empty
+        if not key:
+            continue
+        value = item.get("value")
+        if not value:
+            continue
+        try:
+            number = float(value[1])
+        except (IndexError, ValueError, TypeError):
+            continue
+        if drop_nan and math.isnan(number):
+            continue
+        out[key] = number
+    return out
 
 
 def _parse_duration(d: str) -> int:

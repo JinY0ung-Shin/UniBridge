@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db_types import utcnow
+from app.db_types import as_utc, utcnow
 from app.models import AlertState
 
 logger = logging.getLogger(__name__)
@@ -343,9 +343,7 @@ def _parse_since(value: str) -> datetime:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return utcnow()
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return as_utc(parsed)
 
 
 async def save_alert_state_to_db(
@@ -391,16 +389,11 @@ async def load_alert_state_from_db(
     rows = result.scalars().all()
     state.reset()
     for row in rows:
-        since = row.since
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        else:
-            since = since.astimezone(timezone.utc)
         state.set_entry(
             row.alert_type,
             row.target,
             status=row.status,
-            since=since.isoformat(),
+            since=as_utc(row.since).isoformat(),
             display_target=row.display_target,
             fail_count=row.fail_count,
             success_count=row.success_count or 0,

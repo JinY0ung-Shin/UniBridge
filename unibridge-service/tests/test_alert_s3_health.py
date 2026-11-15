@@ -10,12 +10,12 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import AlertChannel, AlertHistory, AlertSettings, AlertState, ResourceOwner
 from app.services import alert_checker
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, purge_stale_states
+from tests.helpers import sessions
 
 PAYLOAD_TEMPLATE = '{"recipients":{{recipients_json}},"body":"{{message}}"}'
 RECIPIENT_TEMPLATE = '{"emailAddress":"{{email}}","recipientType":"TO"}'
@@ -131,7 +131,7 @@ async def test_healthy_s3_never_notifies():
 
 
 async def test_s3_alert_reaches_the_s3_assignees_and_admins(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = AlertChannel(
             name="mail",
@@ -180,7 +180,7 @@ async def test_s3_alert_reaches_the_s3_assignees_and_admins(engine):
 
 
 async def test_s3_alerts_can_be_switched_off_per_connection(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = AlertChannel(
             name="mail",

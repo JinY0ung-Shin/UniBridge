@@ -15,16 +15,10 @@ import json
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
-import httpx
 
 from app.services.audit import redact_snapshot
 from tests.conftest import auth_header
-
-
-def _http_status(code: int, body: str = "not found") -> httpx.HTTPStatusError:
-    req = httpx.Request("GET", "http://apisix")
-    res = httpx.Response(code, request=req, text=body)
-    return httpx.HTTPStatusError("err", request=req, response=res)
+from tests.helpers import audit_logs, http_status_error
 
 
 # Route inventory the API-key consumer-restriction sync iterates over.
@@ -39,14 +33,6 @@ ROUTE_FIXTURES = {
 }
 
 GW = "app.routers.gateway.apisix_client"
-
-
-async def _audit_logs(client, token, **params):
-    resp = await client.get(
-        "/admin/audit-logs", params=params, headers=auth_header(token)
-    )
-    assert resp.status_code == 200, resp.text
-    return resp.json()
 
 
 # ── redact_snapshot ──────────────────────────────────────────────────────────
@@ -124,7 +110,7 @@ class TestRouteAuditing:
             )
             assert resp.status_code == 200
 
-        logs = await _audit_logs(client, admin_token, resource_type="route")
+        logs = await audit_logs(client, admin_token, resource_type="route")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["actor"] == "testadmin"
@@ -154,7 +140,7 @@ class TestRouteAuditing:
             )
             assert resp.status_code == 200
 
-        logs = await _audit_logs(client, admin_token, resource_type="route", action="update")
+        logs = await audit_logs(client, admin_token, resource_type="route", action="update")
         assert len(logs) == 1
         assert logs[0]["action"] == "update"
         assert json.loads(logs[0]["before"])["uri"] == "/api/old/*"
@@ -171,7 +157,7 @@ class TestRouteAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="route", action="delete")
+        logs = await audit_logs(client, admin_token, resource_type="route", action="delete")
         assert len(logs) == 1
         assert logs[0]["resource_id"] == "r3"
         assert logs[0]["summary"] == "/api/del/*"
@@ -186,7 +172,7 @@ class TestUpstreamAuditing:
     async def test_create_upstream_writes_audit(self, client, admin_token):
         saved = {"id": "u9", "name": "my-up"}
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=_http_status(404)),
+            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=http_status_error(404, "not found")),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(saved)),
         ):
             resp = await client.put(
@@ -196,7 +182,7 @@ class TestUpstreamAuditing:
             )
             assert resp.status_code == 200
 
-        logs = await _audit_logs(client, admin_token, resource_type="upstream", action="create")
+        logs = await audit_logs(client, admin_token, resource_type="upstream", action="create")
         assert len(logs) == 1
         assert logs[0]["resource_id"] == "u9"
         assert logs[0]["summary"] == "my-up"
@@ -213,7 +199,7 @@ class TestUpstreamAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="upstream", action="delete")
+        logs = await audit_logs(client, admin_token, resource_type="upstream", action="delete")
         assert len(logs) == 1
         assert logs[0]["resource_id"] == "u8"
         assert logs[0]["summary"] == "old-up"
@@ -244,7 +230,7 @@ class TestApiKeyAuditing:
             )
             assert resp.status_code == 201
 
-        logs = await _audit_logs(client, admin_token, resource_type="api_key", action="create")
+        logs = await audit_logs(client, admin_token, resource_type="api_key", action="create")
         assert len(logs) == 1
         entry = logs[0]
         assert entry["resource_id"] == "audit-app"
@@ -272,7 +258,7 @@ class TestApiKeyAuditing:
             )
             assert resp.status_code == 204
 
-        logs = await _audit_logs(client, admin_token, resource_type="api_key", action="delete")
+        logs = await audit_logs(client, admin_token, resource_type="api_key", action="delete")
         assert len(logs) == 1
         assert logs[0]["resource_id"] == "del-audit"
         assert logs[0]["after"] is None
@@ -300,7 +286,7 @@ class TestAdminAuditEndpoint:
                 headers=auth_header(admin_token),
             )
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=_http_status(404)),
+            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=http_status_error(404, "not found")),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(upstream)),
         ):
             await client.put(
@@ -309,13 +295,13 @@ class TestAdminAuditEndpoint:
                 headers=auth_header(admin_token),
             )
 
-        assert len(await _audit_logs(client, admin_token)) == 2
-        route_logs = await _audit_logs(client, admin_token, resource_type="route")
+        assert len(await audit_logs(client, admin_token)) == 2
+        route_logs = await audit_logs(client, admin_token, resource_type="route")
         assert len(route_logs) == 1 and route_logs[0]["resource_type"] == "route"
-        up_logs = await _audit_logs(client, admin_token, resource_type="upstream")
+        up_logs = await audit_logs(client, admin_token, resource_type="upstream")
         assert len(up_logs) == 1 and up_logs[0]["resource_type"] == "upstream"
-        assert len(await _audit_logs(client, admin_token, actor="testadmin")) == 2
-        assert await _audit_logs(client, admin_token, actor="nobody") == []
+        assert len(await audit_logs(client, admin_token, actor="testadmin")) == 2
+        assert await audit_logs(client, admin_token, actor="nobody") == []
 
     async def test_audit_write_failure_does_not_break_mutation(self, client, admin_token):
         """A failure inside log_admin_action is swallowed — the route still saves."""
@@ -333,4 +319,4 @@ class TestAdminAuditEndpoint:
             assert resp.status_code == 200
 
         # The audit write failed and was swallowed, so no row was persisted.
-        assert await _audit_logs(client, admin_token, resource_type="route") == []
+        assert await audit_logs(client, admin_token, resource_type="route") == []

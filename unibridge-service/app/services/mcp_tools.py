@@ -50,12 +50,11 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 import httpx
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ApiKeyUser
 from app.config import settings as app_settings
-from app.models import McpRemoteServer, SystemConfig
+from app.models import McpRemoteServer
 from app.routers import gateway as gateway_router
 from app.routers import query as query_router
 from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
@@ -66,7 +65,9 @@ from app.services.apisix_system_resources import (
     QUERY_API_ROUTE_ID,
     is_system_route,
 )
+from app.services.capped_read import read_capped
 from app.services.connection_manager import connection_manager
+from app.services.meta_store import load_config_model, save_config_model
 from app.services.nas_manager import nas_manager
 from app.services.openapi_export import extract_template_params
 from app.services.s3_manager import S3_MAX_PAGE_KEYS, s3_manager
@@ -223,35 +224,17 @@ class Tool:
 
 
 async def load_settings(db: AsyncSession) -> McpSettings:
-    row = await db.get(SystemConfig, MCP_SETTINGS_KEY)
-    if row is None:
-        return McpSettings()
-    try:
-        return McpSettings.model_validate_json(row.value)
-    except ValidationError:
-        logger.warning("Invalid %s in system_config, using defaults", MCP_SETTINGS_KEY)
-        return McpSettings()
+    return await load_config_model(
+        db,
+        MCP_SETTINGS_KEY,
+        McpSettings,
+        log=logger,
+        unreadable_message="Invalid %s in system_config, using defaults",
+    )
 
 
 async def save_settings(db: AsyncSession, new: McpSettings) -> None:
-    row = await db.get(SystemConfig, MCP_SETTINGS_KEY)
-    value = new.model_dump_json()
-    if row is None:
-        db.add(SystemConfig(key=MCP_SETTINGS_KEY, value=value))
-    else:
-        row.value = value
-    await db.commit()
-
-
-# ── Grants ──────────────────────────────────────────────────────────────────
-
-
-def has_route(user: ApiKeyUser, route_id: str) -> bool:
-    return "*" in user.allowed_routes or route_id in user.allowed_routes
-
-
-def _has_alias(user: ApiKeyUser, alias: str) -> bool:
-    return "*" in user.allowed_databases or alias in user.allowed_databases
+    await save_config_model(db, MCP_SETTINGS_KEY, new)
 
 
 # ── Gateway ─────────────────────────────────────────────────────────────────
@@ -537,7 +520,7 @@ def _capped_call_result(result: Any, max_bytes: int) -> dict[str, Any]:
 
 
 def _require_database(user: ApiKeyUser, alias: str) -> str:
-    if not _has_alias(user, alias):
+    if not user.has_alias(alias):
         raise ToolError(f"This API key is not allowed to access database '{alias}'")
     db_type = connection_manager.get_db_type(alias)
     if db_type == "unknown":
@@ -547,7 +530,7 @@ def _require_database(user: ApiKeyUser, alias: str) -> str:
 
 async def _list_databases(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     aliases = sorted(
-        alias for alias in connection_manager.list_aliases() if _has_alias(ctx.user, alias)
+        alias for alias in connection_manager.list_aliases() if ctx.user.has_alias(alias)
     )
     return {
         "databases": [
@@ -850,14 +833,14 @@ TEMPLATE_TOOLS = (
 
 
 def _require_s3(user: ApiKeyUser, alias: str) -> None:
-    if not _has_alias(user, alias):
+    if not user.has_alias(alias):
         raise ToolError(f"This API key is not allowed to access S3 connection '{alias}'")
 
 
 async def _s3_list_connections(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "connections": sorted(
-            alias for alias in s3_manager.list_aliases() if _has_alias(ctx.user, alias)
+            alias for alias in s3_manager.list_aliases() if ctx.user.has_alias(alias)
         )
     }
 
@@ -994,14 +977,14 @@ S3_TOOLS = (
 
 
 def _require_nas(user: ApiKeyUser, alias: str) -> None:
-    if not _has_alias(user, alias):
+    if not user.has_alias(alias):
         raise ToolError(f"This API key is not allowed to access NAS connection '{alias}'")
 
 
 async def _nas_list_connections(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "connections": sorted(
-            alias for alias in nas_manager.list_aliases() if _has_alias(ctx.user, alias)
+            alias for alias in nas_manager.list_aliases() if ctx.user.has_alias(alias)
         )
     }
 
@@ -1878,6 +1861,9 @@ _CONDITION_FIELDS = ("host", "hosts", "vars", "remote_addrs", "remote_addr", "fi
 
 
 def _route_paths(route: dict[str, Any]) -> list[str]:
+    # Not apisix_client.route_paths: that one joins uri and uris. This reads uri
+    # alone when it is set (as openapi_export does), so merging them would change
+    # which paths search_apis/call_api match.
     uri = route.get("uri")
     if isinstance(uri, str) and uri:
         return [uri]
@@ -1954,7 +1940,7 @@ def offered_route_ids(ctx: ToolContext) -> dict[str, str]:
     return {
         route.route_id: route.description
         for route in ctx.settings.exposed_routes
-        if has_route(ctx.user, route.route_id)
+        if ctx.user.has_route(route.route_id)
     }
 
 
@@ -2361,8 +2347,8 @@ _UNKNOWN_OUTCOME = "; whether it processed the upload is not known"
 def holds_an_artifact_source(ctx: ToolContext) -> bool:
     """Whether the key holds a grant download_artifact could read through."""
     return (
-        has_route(ctx.user, GROUP_ROUTES["s3"])
-        or has_route(ctx.user, GROUP_ROUTES["nas"])
+        ctx.user.has_route(GROUP_ROUTES["s3"])
+        or ctx.user.has_route(GROUP_ROUTES["nas"])
         or bool(offered_route_ids(ctx))
     )
 
@@ -2371,8 +2357,8 @@ def _artifact_sources(ctx: ToolContext, offers_api: bool) -> tuple[str, ...]:
     """The sources this key can read: each follows its own group and grant."""
     groups = ctx.settings.tool_groups
     available = {
-        "s3": groups.s3 and has_route(ctx.user, GROUP_ROUTES["s3"]),
-        "nas": groups.nas and has_route(ctx.user, GROUP_ROUTES["nas"]),
+        "s3": groups.s3 and ctx.user.has_route(GROUP_ROUTES["s3"]),
+        "nas": groups.nas and ctx.user.has_route(GROUP_ROUTES["nas"]),
         "api": offers_api,
     }
     return tuple(source for source in ARTIFACT_SOURCES if available[source])
@@ -2436,7 +2422,7 @@ async def _fetch_file(
             declared = _declared_length(response.headers)
             if declared is not None and declared > max_bytes:
                 raise ToolError(too_large)
-            data = await mcp_artifacts.collect(response.aiter_bytes(), max_bytes)
+            data = await read_capped(response.aiter_bytes(), max_bytes)
             if data is None:
                 raise ToolError(too_large)
             if declared is not None and declared != len(data):
@@ -3301,7 +3287,7 @@ def _external_tool(server: mcp_remote.ServerRef, upstream: dict[str, Any]) -> To
 def external_servers_granted(
     ctx: ToolContext, servers: list[McpRemoteServer]
 ) -> list[McpRemoteServer]:
-    return [s for s in servers if has_route(ctx.user, mcp_remote.route_id(s.name))]
+    return [s for s in servers if ctx.user.has_route(mcp_remote.route_id(s.name))]
 
 
 async def external_tools(ctx: ToolContext) -> list[Tool]:
@@ -3354,19 +3340,19 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
     groups = ctx.settings.tool_groups
     user = ctx.user
     tools: list[Tool] = []
-    if groups.db_explore and has_route(user, GROUP_ROUTES["db_explore"]):
+    if groups.db_explore and user.has_route(GROUP_ROUTES["db_explore"]):
         tools.extend(DB_EXPLORE_TOOLS)
-    if groups.run_query and has_route(user, GROUP_ROUTES["run_query"]):
+    if groups.run_query and user.has_route(GROUP_ROUTES["run_query"]):
         tools.append(RUN_QUERY_TOOL)
-    if groups.s3 and has_route(user, GROUP_ROUTES["s3"]):
+    if groups.s3 and user.has_route(GROUP_ROUTES["s3"]):
         tools.extend(S3_TOOLS)
-    if groups.nas and has_route(user, GROUP_ROUTES["nas"]):
+    if groups.nas and user.has_route(GROUP_ROUTES["nas"]):
         tools.extend(NAS_TOOLS)
-    if groups.templates and has_route(user, GROUP_ROUTES["templates"]):
+    if groups.templates and user.has_route(GROUP_ROUTES["templates"]):
         tools.extend(TEMPLATE_TOOLS)
-    if groups.network and has_route(user, GROUP_ROUTES["network"]):
+    if groups.network and user.has_route(GROUP_ROUTES["network"]):
         tools.extend(NETWORK_READ_TOOLS)
-        if has_route(user, NETWORK_WRITE_ROUTE_ID):
+        if user.has_route(NETWORK_WRITE_ROUTE_ID):
             tools.extend(NETWORK_WRITE_TOOLS)
     offers_api = groups.apis and await _offers_an_api(ctx)
     if offers_api:

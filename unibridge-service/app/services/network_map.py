@@ -35,7 +35,6 @@ from app.models import (
     PortUsage,
     Region,
     S3Connection,
-    SystemConfig,
 )
 from app.schemas import (
     AccessCheckResponse,
@@ -58,6 +57,9 @@ from app.schemas import (
     RegionResponse,
 )
 from app.services import apisix_client
+# Re-exported: routers/network.py calls network_map.split_host_port.
+from app.services.apisix_client import split_host_port
+from app.services.meta_store import load_config_model, save_config_model
 
 logger = logging.getLogger(__name__)
 
@@ -103,23 +105,6 @@ def parse_ip(value: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address
         return ipaddress.ip_address(value.strip().strip("[]"))
     except ValueError:
         return None
-
-
-def split_host_port(address: str | None) -> tuple[str, int | None] | None:
-    """``host:port`` / ``[v6]:port`` / ``host`` → (host, port or None)."""
-    if not address:
-        return None
-    address = address.strip()
-    if address.startswith("["):
-        host, _, rest = address[1:].partition("]")
-        port = rest[1:] if rest.startswith(":") else ""
-    elif address.count(":") == 1:
-        host, _, port = address.partition(":")
-    else:
-        host, port = address, ""
-    if not host:
-        return None
-    return host, int(port) if port.isdigit() else None
 
 
 def port_label(protocol: str, port_from: int, port_to: int) -> str:
@@ -246,24 +231,17 @@ class Snapshot:
 
 
 async def load_settings(db: AsyncSession) -> NetworkSettings:
-    row = await db.get(SystemConfig, SETTINGS_KEY)
-    if row is None:
-        return NetworkSettings()
-    try:
-        return NetworkSettings.model_validate_json(row.value)
-    except ValueError:
-        logger.warning("Ignoring unreadable %s in system_config", SETTINGS_KEY)
-        return NetworkSettings()
+    return await load_config_model(
+        db,
+        SETTINGS_KEY,
+        NetworkSettings,
+        log=logger,
+        unreadable_message="Ignoring unreadable %s in system_config",
+    )
 
 
 async def save_settings(db: AsyncSession, value: NetworkSettings) -> None:
-    row = await db.get(SystemConfig, SETTINGS_KEY)
-    payload = value.model_dump_json()
-    if row is None:
-        db.add(SystemConfig(key=SETTINGS_KEY, value=payload))
-    else:
-        row.value = payload
-    await db.commit()
+    await save_config_model(db, SETTINGS_KEY, value)
 
 
 async def load_snapshot(db: AsyncSession) -> Snapshot:

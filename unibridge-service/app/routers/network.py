@@ -85,15 +85,11 @@ class Actor:
     sees_config: bool = True
 
 
-def _key_has_route(user: ApiKeyUser, route_id: str) -> bool:
-    return "*" in user.allowed_routes or route_id in user.allowed_routes
-
-
 async def _actor(
     user: CurrentUser | ApiKeyUser, db: AsyncSession, *, route_id: str, perms: tuple[str, ...]
 ) -> Actor:
     if isinstance(user, ApiKeyUser):
-        if not _key_has_route(user, route_id):
+        if not user.has_route(route_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Required API key route: {route_id}",

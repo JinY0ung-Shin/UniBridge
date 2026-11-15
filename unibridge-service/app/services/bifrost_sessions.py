@@ -11,7 +11,6 @@ pass.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -22,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db_types import utcnow
 from app.models import BifrostSsoSession
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
 from app.services.connection_manager import decrypt_password, encrypt_password
 
 logger = logging.getLogger(__name__)
@@ -131,11 +130,9 @@ async def run_revoke_loop(
     problem only moves a logout to the next pass.
     """
     logger.info("Bifrost session logout loop started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                await run_revoke_once()
-        except Exception:
-            logger.exception("Bifrost session logout pass failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        run_revoke_once,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("Bifrost session logout pass failed"),
+    )

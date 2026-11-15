@@ -9,7 +9,6 @@ from datetime import timedelta
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.db_types import utcnow
@@ -105,11 +104,6 @@ def bifrost(monkeypatch):
 
     monkeypatch.setattr(bifrost_sso.httpx, "AsyncClient", client_with_fake_bifrost)
     return fake
-
-
-@pytest.fixture
-def db_factory(seeded_db):
-    return async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
 
 
 async def _handoff(client, token: str | None):

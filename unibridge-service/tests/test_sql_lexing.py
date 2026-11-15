@@ -13,7 +13,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app
 from app.auth import ApiKeyUser, invalidate_permission_cache
@@ -38,6 +37,7 @@ from app.services.sql_analysis import (
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 def _code_text(sql: str, db_type: str, **kwargs) -> str:
@@ -281,8 +281,7 @@ def test_unknown_engines_get_every_reading():
 
 
 async def _grant_select_only(seeded_db) -> None:
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(
             Permission(
                 role="querier",

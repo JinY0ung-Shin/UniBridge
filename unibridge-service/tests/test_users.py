@@ -1,70 +1,11 @@
 """Tests for user management endpoints (Keycloak Admin proxy)."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
-import pytest
-
 from app.auth import create_token
-from tests.conftest import auth_header
+from tests.conftest import NEW_USER_ID, USER_1_ID, auth_header
 
-# Valid UUIDs for test user IDs
-USER_1_ID = "00000000-0000-4000-a000-000000000001"
-NEW_USER_ID = "00000000-0000-4000-a000-000000000002"
+# Valid UUIDs for test user IDs; kc_mock (conftest) serves USER_1_ID and NEW_USER_ID.
 SELF_USER_ID = "00000000-0000-4000-a000-000000000003"
-
-
-# ── Mock helpers ─────────────────────────────────────────────────────────────
-
-def _make_kc_mock() -> AsyncMock:
-    """Create an AsyncMock that simulates KeycloakAdminClient."""
-    kc = AsyncMock()
-    # Default: list_users returns one user
-    kc.list_users.return_value = (
-        [
-            {
-                "id": USER_1_ID,
-                "username": "alice",
-                "email": "alice@example.com",
-                "enabled": True,
-                "createdTimestamp": 1700000000000,
-            }
-        ],
-        1,
-    )
-    # Default: get_user returns a user dict
-    kc.get_user.return_value = {
-        "id": USER_1_ID,
-        "username": "alice",
-        "email": "alice@example.com",
-        "enabled": True,
-        "createdTimestamp": 1700000000000,
-    }
-    # Default: user realm roles
-    kc.get_user_realm_roles.return_value = [
-        {"id": "role-id-user", "name": "user"},
-    ]
-    # Default: create_user returns a new user ID
-    kc.create_user.return_value = NEW_USER_ID
-    # Default: realm roles available
-    kc.get_realm_roles.return_value = [
-        {"id": "role-id-admin", "name": "admin"},
-        {"id": "role-id-user", "name": "user"},
-    ]
-    return kc
-
-
-@pytest.fixture
-def kc_mock():
-    """Patch _get_kc_admin to return an AsyncMock KeycloakAdminClient."""
-    import app.routers.users as users_mod
-    # Reset singleton so tests are isolated
-    users_mod._kc_admin = None
-    mock = _make_kc_mock()
-    with patch("app.routers.users._get_kc_admin", return_value=mock):
-        yield mock
-    # Clean up singleton after test
-    users_mod._kc_admin = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -10,10 +10,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 
 def _series(label_name: str, label_value: str, points: list[tuple[int, str]]) -> dict:
@@ -103,10 +103,7 @@ class TestConsumersComparisonSeries:
     async def test_self_scoped_user_forced_to_own_consumer(
         self, client, user_token, seeded_db
     ):
-        session_factory = async_sessionmaker(
-            seeded_db, class_=AsyncSession, expire_on_commit=False
-        )
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
             await db.commit()
         mock = AsyncMock(return_value=[])

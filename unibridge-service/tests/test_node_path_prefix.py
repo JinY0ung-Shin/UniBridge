@@ -13,9 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI
 
-from app.main import lifespan
 from app.services.node_path_prefix import (
     GLOBAL_RULE_ID,
     MAX_PATH_PREFIX_LENGTH,
@@ -30,16 +28,10 @@ from app.services.node_path_prefix import (
     validate_upstream_node_prefixes,
 )
 from tests.conftest import auth_header
-from tests.test_main import _DummyTask, _fake_get_db
+from tests.helpers import http_status_error, run_lifespan
 
 UNKNOWN_PLUGIN_BODY = '{"error_msg":"unknown plugin [unibridge-node-path-prefix]"}'
 RULE_BODY = {"plugins": {PLUGIN_NAME: {}}}
-
-
-def _http_status(code: int, body: str) -> httpx.HTTPStatusError:
-    req = httpx.Request("PUT", "http://apisix/apisix/admin/global_rules/x")
-    res = httpx.Response(code, request=req, text=body)
-    return httpx.HTTPStatusError("err", request=req, response=res)
 
 
 def _node(host: str, port: int | None = 8080, prefix=None, **extra) -> dict:
@@ -261,17 +253,17 @@ async def test_ensure_global_rule_puts_the_plugin_rule():
 class TestDescribeApisixError:
     def test_prefers_apisix_error_msg(self):
         assert (
-            describe_apisix_error(_http_status(400, UNKNOWN_PLUGIN_BODY))
+            describe_apisix_error(http_status_error(400, UNKNOWN_PLUGIN_BODY))
             == "unknown plugin [unibridge-node-path-prefix]"
         )
 
     def test_falls_back_to_the_body(self):
-        assert describe_apisix_error(_http_status(502, "bad gateway")) == "bad gateway"
-        assert describe_apisix_error(_http_status(400, '{"x": 1}')) == '{"x": 1}'
-        assert describe_apisix_error(_http_status(500, "x" * 500)) == "x" * 200
+        assert describe_apisix_error(http_status_error(502, "bad gateway")) == "bad gateway"
+        assert describe_apisix_error(http_status_error(400, '{"x": 1}')) == '{"x": 1}'
+        assert describe_apisix_error(http_status_error(500, "x" * 500)) == "x" * 200
 
     def test_empty_body_names_the_status(self):
-        assert describe_apisix_error(_http_status(400, "")) == "HTTP 400"
+        assert describe_apisix_error(http_status_error(400, "")) == "HTTP 400"
 
     def test_transport_errors(self):
         assert describe_apisix_error(httpx.ConnectError("refused")) == "refused"
@@ -281,10 +273,10 @@ class TestDescribeApisixError:
 @pytest.mark.parametrize(
     "exc, expected",
     [
-        (_http_status(400, UNKNOWN_PLUGIN_BODY), True),
-        (_http_status(400, '{"error_msg":"unknown plugin [other-plugin]"}'), False),
-        (_http_status(400, '{"error_msg":"invalid configuration"}'), False),
-        (_http_status(500, UNKNOWN_PLUGIN_BODY), False),
+        (http_status_error(400, UNKNOWN_PLUGIN_BODY), True),
+        (http_status_error(400, '{"error_msg":"unknown plugin [other-plugin]"}'), False),
+        (http_status_error(400, '{"error_msg":"invalid configuration"}'), False),
+        (http_status_error(500, UNKNOWN_PLUGIN_BODY), False),
         (httpx.ConnectError("unknown plugin [unibridge-node-path-prefix]"), False),
     ],
 )
@@ -293,7 +285,7 @@ def test_only_apisix_unknown_plugin_answer_means_the_plugin_is_missing(exc, expe
 
 
 def test_plugin_unavailable_detail_wording():
-    exc = _http_status(400, UNKNOWN_PLUGIN_BODY)
+    exc = http_status_error(400, UNKNOWN_PLUGIN_BODY)
 
     assert plugin_unavailable_detail(exc) == (
         "Per-node path prefixes need the unibridge-node-path-prefix plugin in "
@@ -368,7 +360,7 @@ class TestSaveUpstream:
     async def test_missing_plugin_fails_the_save_without_writing_the_upstream(
         self, client, admin_token, apisix_writes
     ):
-        apisix_writes.failures[("global_rules", GLOBAL_RULE_ID)] = _http_status(
+        apisix_writes.failures[("global_rules", GLOBAL_RULE_ID)] = http_status_error(
             400, UNKNOWN_PLUGIN_BODY
         )
         body = _upstream(_node("10.0.0.2", prefix="/api"))
@@ -394,12 +386,12 @@ class TestSaveUpstream:
             ),
             (httpx.ConnectTimeout(""), "Failed to connect to APISIX: ConnectTimeout"),
             (
-                _http_status(500, "boom"),
+                http_status_error(500, "boom"),
                 "APISIX refused the unibridge-node-path-prefix global rule (boom); "
                 "nothing was saved.",
             ),
             (
-                _http_status(400, '{"error_msg":"invalid configuration"}'),
+                http_status_error(400, '{"error_msg":"invalid configuration"}'),
                 "APISIX refused the unibridge-node-path-prefix global rule "
                 "(invalid configuration); nothing was saved.",
             ),
@@ -651,7 +643,7 @@ class TestConfigImport:
     async def test_missing_plugin_fails_the_item_without_writing_it(
         self, client, admin_token, apisix_state
     ):
-        apisix_state.failures[("global_rules", GLOBAL_RULE_ID)] = _http_status(
+        apisix_state.failures[("global_rules", GLOBAL_RULE_ID)] = http_status_error(
             400, UNKNOWN_PLUGIN_BODY
         )
         item = {"id": "svc-up", **_upstream(_node("10.0.0.2", prefix="/api"))}
@@ -769,7 +761,7 @@ class TestRouteImportInlineUpstream:
     async def test_missing_plugin_fails_the_route_without_writing_it(
         self, client, admin_token, apisix_state
     ):
-        apisix_state.failures[("global_rules", GLOBAL_RULE_ID)] = _http_status(
+        apisix_state.failures[("global_rules", GLOBAL_RULE_ID)] = http_status_error(
             400, UNKNOWN_PLUGIN_BODY
         )
 
@@ -784,34 +776,13 @@ class TestRouteImportInlineUpstream:
 
 
 async def _run_lifespan(put_resource: AsyncMock, list_resources: AsyncMock | None = None) -> None:
-    with (
-        patch("app.main.validate_settings"),
-        patch("app.main.init_db", new=AsyncMock()),
-        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
-        patch("app.main.connection_manager.initialize", new=AsyncMock()),
-        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
-        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
-        patch("app.main.rate_limiter.update_limits"),
-        patch(
-            "app.main.settings",
-            SimpleNamespace(APISIX_PROVISION_ON_START=False),
-        ),
-        patch("app.services.apisix_client.get_resource", AsyncMock()),
-        patch("app.services.apisix_client.put_resource", put_resource),
-        patch(
-            "app.services.apisix_client.list_resources",
-            list_resources or AsyncMock(return_value={"items": []}),
-        ),
-        patch("app.main.api_keys.sync_all_consumer_route_restrictions", AsyncMock()),
-        patch(
-            "app.services.alert_checker.start_checker",
-            AsyncMock(return_value=_DummyTask()),
-        ),
-        patch("app.routers.alerts.set_alert_state"),
-        patch("app.routers.users._kc_admin", None),
-    ):
-        async with lifespan(FastAPI()):
-            pass
+    await run_lifespan(
+        SimpleNamespace(APISIX_PROVISION_ON_START=False),
+        get_resource=AsyncMock(),
+        put_resource=put_resource,
+        list_resources=list_resources,
+        replay=AsyncMock(),
+    )
 
 
 async def test_boot_installs_the_global_rule_after_prometheus():
@@ -827,7 +798,7 @@ async def test_boot_installs_the_global_rule_after_prometheus():
 async def test_boot_continues_when_apisix_lacks_the_plugin(caplog):
     async def put_resource(resource, resource_id, body):
         if (resource, resource_id) == ("global_rules", GLOBAL_RULE_ID):
-            raise _http_status(400, UNKNOWN_PLUGIN_BODY)
+            raise http_status_error(400, UNKNOWN_PLUGIN_BODY)
         return {}
 
     put_mock = AsyncMock(side_effect=put_resource)
@@ -855,7 +826,7 @@ async def test_boot_flags_prefixed_upstreams_an_apisix_without_the_plugin_ignore
     # applying: that is an error worth naming the upstreams for, not a warning.
     async def put_resource(resource, resource_id, body):
         if (resource, resource_id) == ("global_rules", GLOBAL_RULE_ID):
-            raise _http_status(400, UNKNOWN_PLUGIN_BODY)
+            raise http_status_error(400, UNKNOWN_PLUGIN_BODY)
         return {}
 
     async def list_resources(resource):

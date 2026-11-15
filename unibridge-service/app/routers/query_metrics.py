@@ -46,6 +46,7 @@ from app.routers.gateway import (
     _grouped_volume_series,
     _MonitoringScope,
     _promql_str,
+    _quantile_series,
     _scope_consumer,
     _volume_series,
     resolve_time_window,
@@ -215,49 +216,6 @@ def _scalar_or_none(results: list[dict[str, Any]]) -> float | None:
         return None
 
 
-def _nullable_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Like ``_extract_timeseries`` but NaN/Inf → None instead of 0.
-
-    A quantile over a window without successful queries is NaN; reporting it as
-    0 ms would draw fake instant queries on the latency chart.
-    """
-    if not results:
-        return []
-    points = []
-    for ts, val in results[0].get("values", []):
-        try:
-            value = _finite(float(val))
-        except (ValueError, TypeError):
-            value = None
-        points.append({
-            "timestamp": int(ts),
-            "value": round(value, 4) if value is not None else None,
-        })
-    return points
-
-
-def _map_by_label(
-    results: list[dict[str, Any]], label_name: str, empty: str | None = None
-) -> dict[str, float]:
-    """Instant-query result → {label value: float} (NaN kept for the caller).
-
-    Items missing the label are skipped, or mapped to ``empty`` when given.
-    """
-    out: dict[str, float] = {}
-    for r in results or []:
-        key = r.get("metric", {}).get(label_name) or empty
-        if not key:
-            continue
-        value = r.get("value")
-        if not value:
-            continue
-        try:
-            out[key] = float(value[1])
-        except (IndexError, ValueError, TypeError):
-            continue
-    return out
-
-
 def _comparison_row(
     queries: float,
     total: float,
@@ -274,12 +232,6 @@ def _comparison_row(
         "latency_p95_ms": _round_or_none(p95_ms),
         "avg_rows": _round_or_none(avg_rows),
     }
-
-
-def _prometheus_error(exc: Exception) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-    )
 
 
 @router.get("/summary")
@@ -329,7 +281,7 @@ async def summary(
             ),
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
 
     total = _extract_scalar(total_res)
     errors = _extract_scalar(errors_res)
@@ -360,7 +312,7 @@ async def queries_total(
             lambda window: _count_expr(consumer, database, window), tw
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
     return [{"timestamp": p["timestamp"], "value": round(p["value"])} for p in points]
 
 
@@ -390,7 +342,7 @@ async def outcomes(
             "queries",
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
 
     points_by_status = {series["key"]: series["points"] for series in breakdown["series"]}
     if not points_by_status:
@@ -433,21 +385,14 @@ async def latency(
         end = time.time()
         start = end - _seconds(tw.promql_window)
     rate_window = f"{max(_LATENCY_MIN_RATE_WINDOW_S, _seconds(tw.step))}s"
-    try:
-        p50, p95, p99 = await asyncio.gather(*(
-            prometheus_client.range_query(
-                _quantile_ms_expr(quantile, consumer, database, rate_window),
-                duration=tw.promql_window, step=tw.step, start=start, end=end,
-            )
-            for quantile in (0.5, 0.95, 0.99)
-        ))
-    except Exception as exc:
-        raise _prometheus_error(exc)
-    return {
-        "p50": _nullable_timeseries(p50),
-        "p95": _nullable_timeseries(p95),
-        "p99": _nullable_timeseries(p99),
-    }
+    # A quantile over a step without successful queries is NaN: it reads null
+    # rather than 0 ms, which would draw fake instant queries.
+    return await _quantile_series(
+        lambda quantile: _quantile_ms_expr(quantile, consumer, database, rate_window),
+        tw,
+        start=start,
+        end=end,
+    )
 
 
 @router.get("/databases-comparison")
@@ -500,7 +445,7 @@ async def databases_comparison(
             ),
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
 
     # A re-registered alias can carry two db_type series: sum them, and report
     # the type that saw the most queries.
@@ -521,10 +466,10 @@ async def databases_comparison(
             per_type = type_counts.setdefault(alias, {})
             per_type[metric["db_type"]] = per_type.get(metric["db_type"], 0.0) + count
 
-    errors_map = _map_by_label(errors_res, "db_alias")
-    latency_map = _map_by_label(latency_res, "db_alias")
-    p95_map = _map_by_label(p95_res, "db_alias")
-    rows_map = _map_by_label(rows_res, "db_alias")
+    errors_map = prometheus_client.map_by_label(errors_res, "db_alias")
+    latency_map = prometheus_client.map_by_label(latency_res, "db_alias")
+    p95_map = prometheus_client.map_by_label(p95_res, "db_alias")
+    rows_map = prometheus_client.map_by_label(rows_res, "db_alias")
     total = _extract_scalar(total_res)
 
     databases: list[dict[str, Any]] = []
@@ -598,13 +543,12 @@ async def consumers_comparison(
             ),
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
 
-    queries_map = _map_by_label(queries_res, "consumer", empty=UNTRACKED_CONSUMER)
-    errors_map = _map_by_label(errors_res, "consumer", empty=UNTRACKED_CONSUMER)
-    latency_map = _map_by_label(latency_res, "consumer", empty=UNTRACKED_CONSUMER)
-    p95_map = _map_by_label(p95_res, "consumer", empty=UNTRACKED_CONSUMER)
-    rows_map = _map_by_label(rows_res, "consumer", empty=UNTRACKED_CONSUMER)
+    queries_map, errors_map, latency_map, p95_map, rows_map = (
+        prometheus_client.map_by_label(res, "consumer", empty=UNTRACKED_CONSUMER)
+        for res in (queries_res, errors_res, latency_res, p95_res, rows_res)
+    )
     total = _extract_scalar(total_res)
 
     consumers: list[dict[str, Any]] = []
@@ -645,7 +589,7 @@ async def databases_comparison_series(
             "queries",
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)
 
 
 @router.get("/consumers-comparison-series")
@@ -671,4 +615,4 @@ async def consumers_comparison_series(
             "queries",
         )
     except Exception as exc:
-        raise _prometheus_error(exc)
+        raise prometheus_client.http_error(exc)

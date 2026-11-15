@@ -1,12 +1,12 @@
 """Comprehensive integration tests for the admin router."""
 from __future__ import annotations
 
-import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tests.conftest import auth_header
+from tests.helpers import cm_patch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,35 +62,6 @@ PERMISSION_PAYLOAD = {
 }
 
 
-def _cm_patch(db_type: str = "postgres"):
-    """Return a context-manager that patches the connection_manager singleton.
-
-    Args:
-        db_type: Value returned by the mocked ``get_db_type`` (defaults to
-            ``"postgres"``). Pass ``"graphdb"``/``"neo4j"`` etc. to drive the
-            graph-backend branches.
-
-    Mocked methods:
-      - add_connection  (async, no-op)
-      - remove_connection (async, no-op)
-      - get_status  -> {"status": "registered"}
-      - get_db_type -> ``db_type`` (parameterized)
-      - get_engine  -> MagicMock
-      - has_connection -> True
-      - test_connection (async) -> True
-    """
-    mock_cm = MagicMock()
-    mock_cm.add_connection = AsyncMock()
-    mock_cm.remove_connection = AsyncMock()
-    mock_cm.get_status = MagicMock(return_value={"status": "registered"})
-    mock_cm.get_db_type = MagicMock(return_value=db_type)
-    mock_cm.get_engine = MagicMock(return_value=MagicMock())
-    mock_cm.get_clickhouse_lock = MagicMock(return_value=threading.Lock())
-    mock_cm.has_connection = MagicMock(return_value=True)
-    mock_cm.test_connection = AsyncMock(return_value=(True, "Connection successful"))
-    return patch("app.routers.admin.connection_manager", mock_cm)
-
-
 # ===========================================================================
 # Database Connection CRUD
 # ===========================================================================
@@ -100,7 +71,7 @@ class TestCreateConnection:
     """POST /admin/query/databases"""
 
     async def test_create_connection_success(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -123,7 +94,7 @@ class TestCreateConnection:
         assert "password_encrypted" not in data
 
     async def test_create_duplicate_alias_returns_409(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -138,7 +109,7 @@ class TestCreateConnection:
         assert "already exists" in resp.json()["detail"]
 
     async def test_create_connection_custom_pool_settings(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(
@@ -156,7 +127,7 @@ class TestCreateConnection:
         assert data["query_timeout"] == 60
 
     async def test_create_clickhouse_connection_success(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=CLICKHOUSE_PAYLOAD,
@@ -169,7 +140,7 @@ class TestCreateConnection:
         assert data["secure"] is False
 
     async def test_create_neo4j_connection_success(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=NEO4J_PAYLOAD,
@@ -182,7 +153,7 @@ class TestCreateConnection:
         assert data["secure"] is None
 
     async def test_create_neo4j_missing_protocol_returns_400(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={key: value for key, value in NEO4J_PAYLOAD.items() if key != "protocol"},
@@ -192,7 +163,7 @@ class TestCreateConnection:
         assert "require protocol" in resp.json()["detail"].lower()
 
     async def test_create_neo4j_with_secure_returns_400(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={**NEO4J_PAYLOAD, "secure": True},
@@ -202,7 +173,7 @@ class TestCreateConnection:
         assert "secure" in resp.json()["detail"].lower()
 
     async def test_create_postgres_with_clickhouse_fields_returns_400(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={**DB_PAYLOAD, "protocol": "https", "secure": True},
@@ -214,7 +185,7 @@ class TestCreateConnection:
     async def test_create_clickhouse_with_mismatched_protocol_and_secure_returns_400(
         self, client, admin_token
     ):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={**CLICKHOUSE_PAYLOAD, "protocol": "https", "secure": False},
@@ -224,7 +195,7 @@ class TestCreateConnection:
         assert "same transport" in resp.json()["detail"].lower()
 
     async def test_create_clickhouse_with_neo4j_protocol_returns_400(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={**CLICKHOUSE_PAYLOAD, "protocol": "bolt", "secure": False},
@@ -234,7 +205,7 @@ class TestCreateConnection:
         assert "clickhouse protocol" in resp.json()["detail"].lower()
 
     async def test_create_neo4j_with_clickhouse_protocol_returns_400(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json={**NEO4J_PAYLOAD, "protocol": "http"},
@@ -246,7 +217,7 @@ class TestCreateConnection:
     async def test_create_clickhouse_missing_protocol_or_secure_returns_400(
         self, client, admin_token
     ):
-        with _cm_patch():
+        with cm_patch():
             resp_missing_protocol = await client.post(
                 "/admin/query/databases",
                 json={key: value for key, value in CLICKHOUSE_PAYLOAD.items() if key != "protocol"},
@@ -267,7 +238,7 @@ class TestCreateConnection:
     ):
         """Even if connection_manager.add_connection raises, the DB record is
         persisted and the response shows status='error'."""
-        with _cm_patch() as ctx:
+        with cm_patch() as ctx:
             ctx.add_connection = AsyncMock(side_effect=RuntimeError("boom"))
             resp = await client.post(
                 "/admin/query/databases",
@@ -282,7 +253,7 @@ class TestListConnections:
     """GET /admin/query/databases"""
 
     async def test_list_empty(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.get(
                 "/admin/query/databases",
                 headers=auth_header(admin_token),
@@ -291,7 +262,7 @@ class TestListConnections:
         assert resp.json() == []
 
     async def test_list_returns_created_entries(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(alias="db1"),
@@ -311,7 +282,7 @@ class TestListConnections:
         assert aliases == {"db1", "db2"}
 
     async def test_list_clickhouse_protocol_and_secure_round_trip(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             create_resp = await client.post(
                 "/admin/query/databases",
                 json={**CLICKHOUSE_PAYLOAD, "alias": "analytics_http"},
@@ -332,7 +303,7 @@ class TestListConnections:
 
 class TestClickhouseProtocolRoundTrip:
     async def test_https_and_secure_round_trip(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             create_resp = await client.post(
                 "/admin/query/databases",
                 json={**CLICKHOUSE_PAYLOAD, "alias": "analytics_https", "protocol": "https", "secure": True, "port": 8443},
@@ -355,7 +326,7 @@ class TestUpdateConnection:
     """PUT /admin/query/databases/{alias}"""
 
     async def test_update_connection_fields(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -376,7 +347,7 @@ class TestUpdateConnection:
         assert data["db_type"] == "postgres"
 
     async def test_update_nonexistent_returns_404(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.put(
                 "/admin/query/databases/nope",
                 json={"host": "x"},
@@ -386,7 +357,7 @@ class TestUpdateConnection:
 
     async def test_update_password(self, client, admin_token):
         """Password update should succeed without leaking the password."""
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -403,7 +374,7 @@ class TestUpdateConnection:
         assert "password_encrypted" not in data
 
     async def test_update_clickhouse_protocol_and_secure(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             create_resp = await client.post(
                 "/admin/query/databases",
                 json=CLICKHOUSE_PAYLOAD,
@@ -427,7 +398,7 @@ class TestDeleteConnection:
     """DELETE /admin/query/databases/{alias}"""
 
     async def test_delete_connection(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -440,7 +411,7 @@ class TestDeleteConnection:
         assert resp.status_code == 204
 
     async def test_delete_nonexistent_returns_404(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.delete(
                 "/admin/query/databases/nope",
                 headers=auth_header(admin_token),
@@ -448,7 +419,7 @@ class TestDeleteConnection:
         assert resp.status_code == 404
 
     async def test_delete_removes_it_from_the_list(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -480,7 +451,7 @@ class TestDeleteConnection:
         assert mgr.get_status("db_health", "testdb") == "alert"
         alerts_router.set_alert_state(mgr)
         try:
-            with _cm_patch():
+            with cm_patch():
                 await client.post(
                     "/admin/query/databases",
                     json=_make_db_payload(),
@@ -501,7 +472,7 @@ class TestTestConnection:
     """POST /admin/query/databases/{alias}/test"""
 
     async def test_connection_ok(self, client, admin_token):
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases/anydb/test",
                 headers=auth_header(admin_token),
@@ -512,7 +483,7 @@ class TestTestConnection:
         assert data["alias"] == "anydb"
 
     async def test_connection_not_registered(self, client, admin_token):
-        with _cm_patch() as ctx:
+        with cm_patch() as ctx:
             ctx.has_connection = MagicMock(return_value=False)
             resp = await client.post(
                 "/admin/query/databases/nope/test",
@@ -522,7 +493,7 @@ class TestTestConnection:
         assert "not registered" in resp.json()["detail"]
 
     async def test_connection_fails(self, client, admin_token):
-        with _cm_patch() as ctx:
+        with cm_patch() as ctx:
             ctx.test_connection = AsyncMock(return_value=(False, "Connection refused"))
             resp = await client.post(
                 "/admin/query/databases/baddb/test",
@@ -547,7 +518,7 @@ class TestListTables:
         mock_ch_client = MagicMock()
         mock_ch_client.query.return_value = mock_result
 
-        with _cm_patch() as ctx, patch("app.services.schema_browser.connection_manager", ctx):
+        with cm_patch() as ctx, patch("app.services.schema_browser.connection_manager", ctx):
             ctx.get_db_type = MagicMock(return_value="clickhouse")
             ctx.get_clickhouse_client = MagicMock(return_value=mock_ch_client)
             resp = await client.get(
@@ -558,7 +529,7 @@ class TestListTables:
         assert resp.json() == ["events", "users"]
 
     async def test_list_tables_not_registered(self, client, admin_token):
-        with _cm_patch() as ctx:
+        with cm_patch() as ctx:
             ctx.get_db_type = MagicMock(return_value="unknown")
             resp = await client.get(
                 "/admin/query/databases/nope/tables",
@@ -577,7 +548,7 @@ class TestPermissionChecks:
 
     async def test_create_connection_user_forbidden(self, client, user_token):
         """User role lacks query.databases.write -> 403."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -587,7 +558,7 @@ class TestPermissionChecks:
 
     async def test_list_connections_read_permission_allowed(self, client, querier_token):
         """query.databases.read alone (without .write) is sufficient -> 200."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.get(
                 "/admin/query/databases",
                 headers=auth_header(querier_token),
@@ -596,7 +567,7 @@ class TestPermissionChecks:
 
     async def test_list_connections_user_forbidden(self, client, user_token):
         """User lacks query.databases.read -> 403."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.get(
                 "/admin/query/databases",
                 headers=auth_header(user_token),
@@ -607,7 +578,7 @@ class TestPermissionChecks:
         self, client, admin_token, user_token
     ):
         """User lacks query.databases.write -> 403 on DELETE."""
-        with _cm_patch():
+        with cm_patch():
             await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
@@ -621,7 +592,7 @@ class TestPermissionChecks:
 
     async def test_update_connection_user_forbidden(self, client, user_token):
         """User lacks query.databases.write -> 403 on PUT."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.put(
                 "/admin/query/databases/testdb",
                 json={"host": "newhost"},
@@ -631,13 +602,13 @@ class TestPermissionChecks:
 
     async def test_no_token_returns_401(self, client):
         """FastAPI HTTPBearer returns 401 when Authorization header is missing."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.get("/admin/query/databases")
         assert resp.status_code == 401
 
     async def test_test_connection_user_forbidden(self, client, user_token):
         """User lacks query.databases.read -> 403 on test endpoint."""
-        with _cm_patch():
+        with cm_patch():
             resp = await client.post(
                 "/admin/query/databases/anydb/test",
                 headers=auth_header(user_token),

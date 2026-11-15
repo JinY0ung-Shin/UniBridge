@@ -41,21 +41,20 @@ import hashlib
 import logging
 import re
 import uuid
-import weakref
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete as sa_delete, func, select, text, update
+from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db_types import utcnow
+from app.db_types import iso_utc, utcnow
 from app.models import McpArtifact
 from app.schemas import McpSettings
 from app.services import upload_relay
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
+from app.services.meta_store import advisory_section
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +155,7 @@ class Artifact:
             "size": self.size,
             "sha256": self.sha256,
             "mime": self.content_type,
-            "expires_at": _iso_utc(self.expires_at),
+            "expires_at": iso_utc(self.expires_at),
             "download": {"method": "GET", "path": f"{PUBLIC_PATH}/{self.id}"},
         }
 
@@ -187,10 +186,6 @@ def _artifact(row: Any, *, expires_at: datetime | None = None) -> Artifact:
     )
 
 
-def _iso_utc(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 # ── Names and types ─────────────────────────────────────────────────────────
 
 
@@ -215,23 +210,6 @@ async def base64_text(content: bytes) -> str:
     if len(content) < _HASH_INLINE_BYTES:
         return base64.b64encode(content).decode("ascii")
     return await asyncio.to_thread(lambda: base64.b64encode(content).decode("ascii"))
-
-
-async def collect(chunks: AsyncIterator[bytes], limit: int) -> bytes | None:
-    """All of ``chunks`` as one bytes object, or None once they pass ``limit``.
-
-    Counted as they arrive: an announced length is the sender's word. The
-    chunks are kept as they come and joined once, so the file is copied a
-    single time (a growing buffer would be copied again and again).
-    """
-    parts: list[bytes] = []
-    size = 0
-    async for chunk in chunks:
-        size += len(chunk)
-        if size > limit:
-            return None
-        parts.append(chunk)
-    return b"".join(parts)
 
 
 # ── Concurrency ─────────────────────────────────────────────────────────────
@@ -264,28 +242,9 @@ def transfer_slot(consumer: str, limits: Limits):
             del _in_flight[consumer]
 
 
-# pg_advisory_xact_lock key of the stage-an-artifact critical section ("mcpartf1").
+# pg_advisory_xact_lock key of the stage-an-artifact critical section ("mcpartf1"):
+# one staging at a time between "is there room?" and the INSERT.
 _STORE_LOCK_KEY = 0x6D_63_70_61_72_74_66_31
-# One lock per event loop: an asyncio.Lock belongs to the loop that first
-# waits on it (each test runs its own).
-_store_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
-
-
-@asynccontextmanager
-async def _storing(db: AsyncSession):
-    """One staging at a time between "is there room?" and the INSERT.
-
-    An asyncio lock within this process and, on Postgres, a transaction-level
-    advisory lock across processes (the other blue/green color). The advisory
-    lock goes with the transaction, so the block must end in a commit or a
-    rollback.
-    """
-    async with _store_locks.setdefault(asyncio.get_running_loop(), asyncio.Lock()):
-        if db.get_bind().dialect.name == "postgresql":
-            await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STORE_LOCK_KEY})
-        yield
 
 
 # ── Staging ─────────────────────────────────────────────────────────────────
@@ -322,7 +281,7 @@ async def stage(
     now = utcnow()
     expires_at = now + timedelta(seconds=limits.ttl_seconds)
     refusal: ArtifactError | None = None
-    async with _storing(db):
+    async with advisory_section(db, _STORE_LOCK_KEY):
         try:
             held = (
                 await db.execute(
@@ -462,15 +421,16 @@ async def run_purge_loop(
     """
     from app.database import async_session
 
+    async def purge_once() -> None:
+        async with async_session() as db:
+            removed = await purge_expired(db)
+        if removed:
+            logger.info("MCP artifacts: %d expired artifact(s) deleted", removed)
+
     logger.info("MCP artifact purge loop started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                async with async_session() as db:
-                    removed = await purge_expired(db)
-                if removed:
-                    logger.info("MCP artifacts: %d expired artifact(s) deleted", removed)
-        except Exception:
-            logger.exception("MCP artifact purge pass failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        purge_once,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("MCP artifact purge pass failed"),
+    )

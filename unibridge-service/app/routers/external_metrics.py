@@ -17,7 +17,6 @@ fallback from ``http_requests_total`` to ``http_request_duration_seconds_count``
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 from typing import Any
 
@@ -31,10 +30,13 @@ from app.database import get_db
 from app.models import MonitoredService
 from app.routers.gateway import (
     TimeWindow,
+    _comparison_table,
     _extract_scalar,
     _extract_timeseries,
     _grouped_volume_series,
+    _quantile_series,
     _rate_window,
+    _status_code_rows,
     _volume_series,
     resolve_time_window,
 )
@@ -104,22 +106,39 @@ def _quantile_expr(quantile: float, sel_inner: str, window: str, group_by: str |
     )
 
 
-def _map_by_label(results: list[dict[str, Any]], label_name: str) -> dict[str, float]:
-    """Instant-query result → {label value: float}. Items missing the label are
-    skipped (the convention requires it; unlabeled series can't be attributed)."""
-    out: dict[str, float] = {}
-    for r in results or []:
-        key = r.get("metric", {}).get(label_name)
-        if not key:
-            continue
-        value = r.get("value")
-        if not value:
-            continue
-        try:
-            out[key] = float(value[1])
-        except (IndexError, ValueError, TypeError):
-            continue
-    return out
+async def _comparison(
+    tw: TimeWindow, service: str | None, label: str
+) -> tuple[float, list[dict[str, Any]]]:
+    """(grand total, rows) of a comparison table grouped by ``label``: the
+    top 10 by requests, with share, 5xx error rate and p50/p95 latency (ms).
+
+    Series without the label are skipped (the convention requires it;
+    unlabeled series can't be attributed).
+    """
+    sel = _sel(service)
+    sel5 = _sel(service, 'status=~"5.."')
+    w = tw.promql_window
+    try:
+        results = await asyncio.gather(
+            prometheus_client.instant_query(
+                f"topk(10, {_count_expr(sel, w, group_by=label)})",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _count_expr(sel5, w, group_by=label), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(
+                _quantile_expr(0.5, sel, w, group_by=label), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(
+                _quantile_expr(0.95, sel, w, group_by=label), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(_count_expr(sel, w), eval_time=tw.eval_time),
+        )
+    except Exception as exc:
+        raise prometheus_client.http_error(exc)
+    # The histogram is in seconds.
+    return _comparison_table(results, label, latency_scale=1000)
 
 
 @router.get("/summary")
@@ -148,9 +167,7 @@ async def summary(
             prometheus_client.instant_query(_avg_latency_expr(sel, w), eval_time=tw.eval_time),
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
+        raise prometheus_client.http_error(exc)
     return {
         "total_requests": round(_extract_scalar(total_results)),
         "error_rate": round(_extract_scalar(error_results), 2),
@@ -178,9 +195,7 @@ async def requests(
             expr, duration=tw.promql_window, step=tw.step, start=tw.start, end=tw.end
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
+        raise prometheus_client.http_error(exc)
     return _extract_timeseries(results)
 
 
@@ -196,9 +211,7 @@ async def requests_total(
     try:
         return await _volume_series(lambda window: _count_expr(sel, window), tw)
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
+        raise prometheus_client.http_error(exc)
 
 
 @router.get("/status-codes")
@@ -216,21 +229,8 @@ async def status_codes(
             eval_time=tw.eval_time,
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
-    codes = []
-    for r in results:
-        code = r.get("metric", {}).get("status", "unknown")
-        value = r.get("value", [0, "0"])
-        try:
-            count = round(float(value[1]))
-        except (IndexError, ValueError, TypeError):
-            count = 0
-        if count > 0:
-            codes.append({"code": code, "count": count})
-    codes.sort(key=lambda x: x["count"], reverse=True)
-    return codes
+        raise prometheus_client.http_error(exc)
+    return _status_code_rows(results, "status")
 
 
 @router.get("/latency")
@@ -248,33 +248,10 @@ async def latency(
     """
     _validate_service(service)
     sel = _sel(service)
-    step = tw.step
-    window = _rate_window(step)
-    try:
-        p50, p95, p99 = await asyncio.gather(
-            prometheus_client.range_query(
-                f"({_quantile_expr(0.5, sel, window)}) * 1000",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
-            ),
-            prometheus_client.range_query(
-                f"({_quantile_expr(0.95, sel, window)}) * 1000",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
-            ),
-            prometheus_client.range_query(
-                f"({_quantile_expr(0.99, sel, window)}) * 1000",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
-            ),
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
-
-    return {
-        "p50": _extract_timeseries(p50, nan_as_none=True),
-        "p95": _extract_timeseries(p95, nan_as_none=True),
-        "p99": _extract_timeseries(p99, nan_as_none=True),
-    }
+    window = _rate_window(tw.step)
+    return await _quantile_series(
+        lambda quantile: f"({_quantile_expr(quantile, sel, window)}) * 1000", tw
+    )
 
 
 @router.get("/services")
@@ -304,57 +281,7 @@ async def services_comparison(
     denominator (not just the top-10 rows returned), mirroring routes-comparison.
     """
     _validate_service(service)
-    sel = _sel(service)
-    sel5 = _sel(service, 'status=~"5.."')
-    w = tw.promql_window
-    try:
-        requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
-            prometheus_client.instant_query(
-                f"topk(10, {_count_expr(sel, w, group_by='service')})",
-                eval_time=tw.eval_time,
-            ),
-            prometheus_client.instant_query(
-                _count_expr(sel5, w, group_by="service"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(
-                _quantile_expr(0.5, sel, w, group_by="service"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(
-                _quantile_expr(0.95, sel, w, group_by="service"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(_count_expr(sel, w), eval_time=tw.eval_time),
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
-
-    requests_map = _map_by_label(requests_res, "service")
-    errors_map = _map_by_label(errors_res, "service")
-    p50_map = _map_by_label(p50_res, "service")
-    p95_map = _map_by_label(p95_res, "service")
-    total = _extract_scalar(total_res)
-
-    services: list[dict[str, Any]] = []
-    for name, req in requests_map.items():
-        req_rounded = round(req)
-        if req_rounded <= 0:
-            continue
-        share = (req / total * 100) if total > 0 else 0.0
-        err = errors_map.get(name, 0.0)
-        error_rate = (err / req * 100) if req > 0 else 0.0
-        p50 = p50_map.get(name)
-        p95 = p95_map.get(name)
-        services.append({
-            "service": name,
-            "requests": req_rounded,
-            "share": round(share, 2),
-            "error_rate": round(error_rate, 2),
-            "latency_p50_ms": round(p50 * 1000, 2) if p50 is not None and not math.isnan(p50) else None,
-            "latency_p95_ms": round(p95 * 1000, 2) if p95 is not None and not math.isnan(p95) else None,
-        })
-
-    services.sort(key=lambda s: s["requests"], reverse=True)
+    total, services = await _comparison(tw, service, "service")
     return {"total_requests": round(total), "services": services}
 
 
@@ -374,57 +301,7 @@ async def handlers_comparison(
     ``handler`` label are skipped (the convention requires it).
     """
     _validate_service(service)
-    sel = _sel(service)
-    sel5 = _sel(service, 'status=~"5.."')
-    w = tw.promql_window
-    try:
-        requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
-            prometheus_client.instant_query(
-                f"topk(10, {_count_expr(sel, w, group_by='handler')})",
-                eval_time=tw.eval_time,
-            ),
-            prometheus_client.instant_query(
-                _count_expr(sel5, w, group_by="handler"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(
-                _quantile_expr(0.5, sel, w, group_by="handler"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(
-                _quantile_expr(0.95, sel, w, group_by="handler"), eval_time=tw.eval_time
-            ),
-            prometheus_client.instant_query(_count_expr(sel, w), eval_time=tw.eval_time),
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
-
-    requests_map = _map_by_label(requests_res, "handler")
-    errors_map = _map_by_label(errors_res, "handler")
-    p50_map = _map_by_label(p50_res, "handler")
-    p95_map = _map_by_label(p95_res, "handler")
-    total = _extract_scalar(total_res)
-
-    handlers: list[dict[str, Any]] = []
-    for name, req in requests_map.items():
-        req_rounded = round(req)
-        if req_rounded <= 0:
-            continue
-        share = (req / total * 100) if total > 0 else 0.0
-        err = errors_map.get(name, 0.0)
-        error_rate = (err / req * 100) if req > 0 else 0.0
-        p50 = p50_map.get(name)
-        p95 = p95_map.get(name)
-        handlers.append({
-            "handler": name,
-            "requests": req_rounded,
-            "share": round(share, 2),
-            "error_rate": round(error_rate, 2),
-            "latency_p50_ms": round(p50 * 1000, 2) if p50 is not None and not math.isnan(p50) else None,
-            "latency_p95_ms": round(p95 * 1000, 2) if p95 is not None and not math.isnan(p95) else None,
-        })
-
-    handlers.sort(key=lambda h: h["requests"], reverse=True)
+    total, handlers = await _comparison(tw, service, "handler")
     return {"total_requests": round(total), "handlers": handlers}
 
 
@@ -445,6 +322,4 @@ async def services_comparison_series(
             "requests",
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
+        raise prometheus_client.http_error(exc)

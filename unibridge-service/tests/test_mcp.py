@@ -9,108 +9,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import AdminAuditLog, ApiKeyAccess, DBConnection, QueryTemplate
+from app.models import AdminAuditLog, DBConnection, QueryTemplate
 from app.schemas import QueryResponse
 from app.services import mcp_tools
 from tests.conftest import auth_header
-
-ALL_ROUTES = ["mcp-api", "query-api", "s3-api", "nas-api"]
-
-
-class FakeGateway(httpx.AsyncBaseTransport):
-    """APISIX stand-in for the tool calls MCP sends back out.
-
-    key-auth: ``apikey: key:<consumer>`` authenticates as <consumer>; the
-    route prefixes are rewritten like the fixed routes' proxy-rewrite, and each
-    call is recorded with the route APISIX would count it on.
-    """
-
-    _ROUTES = (
-        (b"/api/query/", b"/query/", "query-api"),
-        (b"/api/s3/", b"/s3/", "s3-api"),
-        (b"/api/nas/", b"/nas/", "nas-api"),
-        # Split by method like the fixed routes: GET reads, the rest writes.
-        (b"/api/network/", b"/network/", "network-api"),
-    )
-
-    def __init__(self, app) -> None:
-        self.inner = httpx.ASGITransport(app=app)
-        self.calls: list[tuple[str, str, str]] = []
-        self.reply: httpx.Response | None = None
-        # Requests to the stand-in external APIs under /api/ext/.
-        self.external: list[httpx.Request] = []
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if request.url.raw_path.startswith(b"/api/ext/"):
-            await request.aread()
-            self.external.append(request)
-            self.calls.append(("ext", request.method, request.url.path))
-            if self.reply is not None:
-                return self.reply
-            return httpx.Response(
-                200,
-                json={"method": request.method, "path": request.url.path},
-                headers={"content-type": "application/json"},
-            )
-        key = request.headers.get("apikey", "")
-        if not key.startswith("key:"):
-            return httpx.Response(401, json={"message": "Invalid API key in request"})
-        raw = request.url.raw_path
-        for prefix, target, route in self._ROUTES:
-            if raw.startswith(prefix):
-                if route == "network-api" and request.method != "GET":
-                    route = "network-write-api"
-                self.calls.append((route, request.method, request.url.path))
-                break
-        else:
-            return httpx.Response(404, json={"error_msg": "404 Route Not Found"})
-        if self.reply is not None:
-            return self.reply
-        headers = {k: v for k, v in request.headers.items() if k != "apikey"}
-        headers["x-consumer-username"] = key.removeprefix("key:")
-        forwarded = httpx.Request(
-            request.method,
-            request.url.copy_with(raw_path=target + raw[len(prefix):]),
-            headers=headers,
-            content=await request.aread(),
-        )
-        return await self.inner.handle_async_request(forwarded)
-
-
-@pytest.fixture
-async def gateway(app):
-    fake = FakeGateway(app)
-    async with httpx.AsyncClient(transport=fake, base_url="http://apisix:9080") as client:
-        with patch("app.services.mcp_tools._gateway_client", return_value=client):
-            yield fake
-
-
-async def _create_api_key(
-    seeded_db,
-    name: str = "agent",
-    *,
-    routes: list[str] | None = None,
-    databases: list[str] | None = None,
-    tables: list[str] | None = None,
-    allow_insert: bool = False,
-) -> dict[str, str]:
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        db.add(
-            ApiKeyAccess(
-                consumer_name=name,
-                allowed_databases=json.dumps(["maindb"] if databases is None else databases),
-                allowed_routes=json.dumps(ALL_ROUTES if routes is None else routes),
-                allowed_tables=json.dumps(tables) if tables is not None else None,
-                allow_insert=allow_insert,
-            )
-        )
-        await db.commit()
-    # What APISIX hands the app on /api/mcp: the consumer it authenticated
-    # (trusted without the proxy secret in dev-token mode) and the key itself.
-    return {"X-Consumer-Username": name, "apikey": f"key:{name}"}
+from tests.helpers import sessions
+from tests.mcp_helpers import (
+    EXT_KEY_ROUTES,
+    EXT_ROUTES,
+    create_mcp_key,
+    expose_routes,
+    ext_route_listing,
+    mcp_call,
+    mcp_rpc,
+    mcp_text,
+    mcp_tool_names,
+    put_mcp_settings,
+)
 
 
 async def _create_template(
@@ -122,8 +38,7 @@ async def _create_template(
     db_alias: str = "maindb",
     enabled: bool = True,
 ) -> None:
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(
             QueryTemplate(
                 path=path,
@@ -150,29 +65,6 @@ async def _create_template(
                 )
             )
         await db.commit()
-
-
-async def _rpc(client, headers, method: str, params: dict | None = None, request_id: Any = 1):
-    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
-    if params is not None:
-        message["params"] = params
-    return await client.post("/mcp", json=message, headers=headers)
-
-
-async def _tool_names(client, headers) -> list[str]:
-    resp = await _rpc(client, headers, "tools/list")
-    assert resp.status_code == 200, resp.text
-    return [tool["name"] for tool in resp.json()["result"]["tools"]]
-
-
-async def _call(client, headers, name: str, arguments: dict) -> dict:
-    resp = await _rpc(client, headers, "tools/call", {"name": name, "arguments": arguments})
-    assert resp.status_code == 200, resp.text
-    return resp.json()["result"]
-
-
-def _text(result: dict, index: int = 0) -> str:
-    return result["content"][index]["text"]
 
 
 def _query_response(rows: list[list[Any]], truncated: bool = False) -> QueryResponse:
@@ -202,24 +94,13 @@ def _postgres(response: QueryResponse | None = None, db_type: str = "postgres"):
         yield execute_query
 
 
-async def _put_settings(client, admin_token, **changes) -> None:
-    body = mcp_tools.McpSettings().model_dump()
-    for key, value in changes.items():
-        if key in body["tool_groups"]:
-            body["tool_groups"][key] = value
-        else:
-            body[key] = value
-    resp = await client.put("/admin/mcp/settings", json=body, headers=auth_header(admin_token))
-    assert resp.status_code == 200, resp.text
-
-
 # ── Protocol ────────────────────────────────────────────────────────────────
 
 
 async def test_initialize_negotiates_the_protocol_version(client, seeded_db):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
 
-    resp = await _rpc(client, headers, "initialize", {"protocolVersion": "2025-06-18"})
+    resp = await mcp_rpc(client, headers, "initialize", {"protocolVersion": "2025-06-18"})
     result = resp.json()["result"]
     assert result["protocolVersion"] == "2025-06-18"
     assert result["serverInfo"]["name"] == "unibridge"
@@ -227,12 +108,12 @@ async def test_initialize_negotiates_the_protocol_version(client, seeded_db):
     assert "run_query" in result["instructions"]
     assert "mcp-session-id" not in resp.headers
 
-    resp = await _rpc(client, headers, "initialize", {"protocolVersion": "1999-01-01"})
+    resp = await mcp_rpc(client, headers, "initialize", {"protocolVersion": "1999-01-01"})
     assert resp.json()["result"]["protocolVersion"] == "2025-11-25"
 
 
 async def test_notifications_and_batches(client, seeded_db):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
 
     resp = await client.post(
         "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers
@@ -257,7 +138,7 @@ async def test_notifications_and_batches(client, seeded_db):
 
 
 async def test_batches_are_capped(client, seeded_db):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(17)]
     resp = await client.post("/mcp", json=batch, headers=headers)
     assert resp.status_code == 400
@@ -268,18 +149,18 @@ async def test_batches_are_capped(client, seeded_db):
 
 
 async def test_rejects_bad_json_and_unknown_protocol_header(client, seeded_db):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
 
     resp = await client.post("/mcp", content=b"{not json", headers=headers)
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == -32700
 
-    resp = await _rpc(client, {**headers, "MCP-Protocol-Version": "1999-01-01"}, "ping")
+    resp = await mcp_rpc(client, {**headers, "MCP-Protocol-Version": "1999-01-01"}, "ping")
     assert resp.status_code == 400
 
 
 async def test_get_and_delete_are_not_supported(client, seeded_db):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     for method in ("GET", "DELETE"):
         resp = await client.request(method, "/mcp", headers=headers)
         assert resp.status_code == 405
@@ -290,47 +171,47 @@ async def test_get_and_delete_are_not_supported(client, seeded_db):
 
 
 async def test_jwt_users_are_refused(client, admin_token):
-    resp = await _rpc(client, auth_header(admin_token), "ping")
+    resp = await mcp_rpc(client, auth_header(admin_token), "ping")
     assert resp.status_code == 403
     assert "API key" in resp.json()["detail"]
 
 
 async def test_key_needs_the_mcp_route_grant(client, seeded_db):
-    headers = await _create_api_key(seeded_db, routes=["query-api"])
-    resp = await _rpc(client, headers, "ping")
+    headers = await create_mcp_key(seeded_db, routes=["query-api"])
+    resp = await mcp_rpc(client, headers, "ping")
     assert resp.status_code == 403
     assert "mcp-api" in resp.json()["detail"]
 
-    headers = await _create_api_key(seeded_db, "master", routes=["*"], databases=["*"])
-    assert (await _rpc(client, headers, "ping")).status_code == 200
+    headers = await create_mcp_key(seeded_db, "master", routes=["*"], databases=["*"])
+    assert (await mcp_rpc(client, headers, "ping")).status_code == 200
 
 
 async def test_disabled_endpoint_refuses_every_key(client, seeded_db, admin_token):
-    headers = await _create_api_key(seeded_db)
-    await _put_settings(client, admin_token, enabled=False)
-    resp = await _rpc(client, headers, "ping")
+    headers = await create_mcp_key(seeded_db)
+    await put_mcp_settings(client, admin_token, enabled=False)
+    resp = await mcp_rpc(client, headers, "ping")
     assert resp.status_code == 403
     assert "disabled" in resp.json()["detail"]
 
 
 async def test_tools_follow_route_grants_and_groups(client, seeded_db, admin_token, gateway):
     await _create_template(seeded_db)
-    full = await _create_api_key(seeded_db)
-    s3_only = await _create_api_key(seeded_db, "s3-only", routes=["mcp-api", "s3-api"])
+    full = await create_mcp_key(seeded_db)
+    s3_only = await create_mcp_key(seeded_db, "s3-only", routes=["mcp-api", "s3-api"])
 
     with _postgres():
-        names = await _tool_names(client, full)
+        names = await mcp_tool_names(client, full)
         assert names[:4] == ["list_databases", "list_tables", "describe_table", "run_query"]
         assert "s3_read_object" in names and "nas_read_file" in names
         # One search tool and one run tool, however many templates there are;
         # then the artifact download, offered through the S3 and NAS grants.
         assert names[-3:] == ["search_templates", "run_template", "download_artifact"]
-        s3_names = await _tool_names(client, s3_only)
+        s3_names = await mcp_tool_names(client, s3_only)
         assert s3_names[-1] == "download_artifact"
         assert all(name.startswith("s3_") for name in s3_names[:-1])
 
-        await _put_settings(client, admin_token, run_query=False, templates=False, nas=False)
-        names = await _tool_names(client, full)
+        await put_mcp_settings(client, admin_token, run_query=False, templates=False, nas=False)
+        names = await mcp_tool_names(client, full)
     assert "run_query" not in names
     assert "search_templates" not in names and "run_template" not in names
     assert not any(name.startswith("nas_") for name in names)
@@ -340,45 +221,45 @@ async def test_tools_follow_route_grants_and_groups(client, seeded_db, admin_tok
 
 
 async def test_unknown_tool_is_a_protocol_error(client, seeded_db):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
-    resp = await _rpc(client, headers, "tools/call", {"name": "run_query", "arguments": {}})
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    resp = await mcp_rpc(client, headers, "tools/call", {"name": "run_query", "arguments": {}})
     assert resp.json()["error"]["code"] == -32602
 
 
 async def test_bad_arguments_are_a_tool_error(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["maindb", "store"])
+    headers = await create_mcp_key(seeded_db, databases=["maindb", "store"])
     with _postgres():
-        result = await _call(client, headers, "run_query", {"database": "maindb"})
+        result = await mcp_call(client, headers, "run_query", {"database": "maindb"})
         assert result["isError"] is True
-        assert "sql" in _text(result)
-        result = await _call(client, headers, "run_query", {"database": "maindb", "sql": 1})
-        assert "must be of type string" in _text(result)
-        result = await _call(client, headers, "list_databases", {"extra": True})
-        assert "Unknown argument" in _text(result)
-    result = await _call(
+        assert "sql" in mcp_text(result)
+        result = await mcp_call(client, headers, "run_query", {"database": "maindb", "sql": 1})
+        assert "must be of type string" in mcp_text(result)
+        result = await mcp_call(client, headers, "list_databases", {"extra": True})
+        assert "Unknown argument" in mcp_text(result)
+    result = await mcp_call(
         client, headers, "s3_get_object_metadata", {"connection": "store", "bucket": None, "key": "k"}
     )
-    assert "'bucket' must be of type string" in _text(result)
+    assert "'bucket' must be of type string" in mcp_text(result)
     assert gateway.calls == []
 
 
 async def test_tool_calls_need_the_forwarded_key(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     del headers["apikey"]
     with _postgres() as execute_query:
-        result = await _call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
+        result = await mcp_call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
     assert result["isError"] is True
-    assert "apikey" in _text(result)
+    assert "apikey" in mcp_text(result)
     execute_query.assert_not_awaited()
 
 
 async def test_gateway_refusals_reach_the_model(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     gateway.reply = httpx.Response(429, json={"error_msg": "Requests are too frequent"})
     with _postgres():
-        result = await _call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
+        result = await mcp_call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
     assert result["isError"] is True
-    assert _text(result) == "429: Requests are too frequent"
+    assert mcp_text(result) == "429: Requests are too frequent"
 
 
 # ── Counting: tool calls land on the REST routes ────────────────────────────
@@ -386,23 +267,23 @@ async def test_gateway_refusals_reach_the_model(client, seeded_db, gateway):
 
 async def test_tool_calls_go_out_on_their_rest_routes(client, seeded_db, gateway):
     await _create_template(seeded_db)
-    headers = await _create_api_key(seeded_db, databases=["maindb", "store", "share"])
+    headers = await create_mcp_key(seeded_db, databases=["maindb", "store", "share"])
     with _postgres(), patch(
         "app.services.schema_browser.list_tables", new_callable=AsyncMock, return_value=["users"]
     ):
-        await _call(client, headers, "list_tables", {"database": "maindb"})
-        await _call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
-        await _call(client, headers, "search_templates", {})
-        await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
+        await mcp_call(client, headers, "list_tables", {"database": "maindb"})
+        await mcp_call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
+        await mcp_call(client, headers, "search_templates", {})
+        await mcp_call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
     with patch("app.routers.s3.s3_manager.has_connection", return_value=True), patch(
         "app.routers.s3.s3_manager.list_buckets", new_callable=AsyncMock, return_value=[]
     ), patch("app.routers.s3.s3_manager.allowed_buckets", return_value=None):
-        result = await _call(client, headers, "s3_list_buckets", {"connection": "store"})
+        result = await mcp_call(client, headers, "s3_list_buckets", {"connection": "store"})
         assert result["isError"] is False, result
     with patch("app.routers.nas.nas_manager.has_connection", return_value=True), patch(
         "app.routers.nas.nas_manager.stat_path", new_callable=AsyncMock, return_value={"type": "file"}
     ):
-        result = await _call(client, headers, "nas_get_metadata", {"connection": "share", "path": "a.txt"})
+        result = await mcp_call(client, headers, "nas_get_metadata", {"connection": "share", "path": "a.txt"})
         assert result["isError"] is False, result
 
     assert gateway.calls == [
@@ -418,14 +299,14 @@ async def test_tool_calls_go_out_on_their_rest_routes(client, seeded_db, gateway
 
 
 async def test_list_databases_follows_the_key_scope(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres():
-        result = await _call(client, headers, "list_databases", {})
-    assert json.loads(_text(result)) == {"databases": [{"database": "maindb", "type": "postgres"}]}
+        result = await mcp_call(client, headers, "list_databases", {})
+    assert json.loads(mcp_text(result)) == {"databases": [{"database": "maindb", "type": "postgres"}]}
 
 
 async def test_list_tables_and_describe_follow_table_scope(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, tables=["users"])
+    headers = await create_mcp_key(seeded_db, tables=["users"])
     with _postgres(), patch(
         "app.services.schema_browser.list_tables",
         new_callable=AsyncMock,
@@ -435,37 +316,37 @@ async def test_list_tables_and_describe_follow_table_scope(client, seeded_db, ga
         new_callable=AsyncMock,
         return_value=[{"name": "id", "type": "integer", "nullable": False}],
     ) as describe:
-        result = await _call(client, headers, "list_tables", {"database": "maindb"})
-        assert json.loads(_text(result))["tables"] == ["users"]
+        result = await mcp_call(client, headers, "list_tables", {"database": "maindb"})
+        assert json.loads(mcp_text(result))["tables"] == ["users"]
 
-        result = await _call(
+        result = await mcp_call(
             client, headers, "describe_table", {"database": "maindb", "table": "orders"}
         )
         assert result["isError"] is True
-        assert _text(result) == "403: Access denied to table: orders"
+        assert mcp_text(result) == "403: Access denied to table: orders"
         describe.assert_not_awaited()
 
-        result = await _call(
+        result = await mcp_call(
             client, headers, "describe_table", {"database": "maindb", "table": "public.users"}
         )
     assert result["isError"] is False
-    assert json.loads(_text(result))["columns"][0]["name"] == "id"
+    assert json.loads(mcp_text(result))["columns"][0]["name"] == "id"
     describe.assert_awaited_once_with("maindb", "public.users")
 
 
 async def test_database_outside_the_key_scope_is_refused(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres() as execute_query:
-        result = await _call(
+        result = await mcp_call(
             client, headers, "run_query", {"database": "otherdb", "sql": "SELECT 1"}
         )
     assert result["isError"] is True
-    assert "otherdb" in _text(result)
+    assert "otherdb" in mcp_text(result)
     execute_query.assert_not_awaited()
 
 
 async def test_run_query_refuses_what_does_not_parse_as_one_select(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, allow_insert=True)
+    headers = await create_mcp_key(seeded_db, allow_insert=True)
     with _postgres(db_type="mssql") as execute_query:
         for sql in (
             "INSERT INTO users (id) VALUES (1)",
@@ -474,11 +355,11 @@ async def test_run_query_refuses_what_does_not_parse_as_one_select(client, seede
             "SELECT 1; DELETE FROM users",
             "EXPLAIN SELECT * FROM users",
         ):
-            result = await _call(client, headers, "run_query", {"database": "maindb", "sql": sql})
+            result = await mcp_call(client, headers, "run_query", {"database": "maindb", "sql": sql})
             assert result["isError"] is True, sql
-            assert "read-only" in _text(result)
+            assert "read-only" in mcp_text(result)
         execute_query.assert_not_awaited()
-        result = await _call(
+        result = await mcp_call(
             client, headers, "run_query", {"database": "maindb", "sql": "SELECT TOP 5 * FROM users"}
         )
     assert result["isError"] is False, result
@@ -486,10 +367,10 @@ async def test_run_query_refuses_what_does_not_parse_as_one_select(client, seede
 
 
 async def test_run_query_caps_rows_at_max_rows(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db)
-    await _put_settings(client, admin_token, max_rows=2)
+    headers = await create_mcp_key(seeded_db)
+    await put_mcp_settings(client, admin_token, max_rows=2)
     with _postgres(_query_response([[1, "a"], [2, "b"]], truncated=True)) as execute_query:
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "run_query",
@@ -497,21 +378,21 @@ async def test_run_query_caps_rows_at_max_rows(client, seeded_db, admin_token, g
         )
     assert execute_query.await_args.kwargs["limit"] == 2
     assert execute_query.await_args.kwargs["params"] == {"id": 0}
-    payload = json.loads(_text(result))
+    payload = json.loads(mcp_text(result))
     assert payload["rows"] == [[1, "a"], [2, "b"]]
     assert payload["truncated"] is True
     assert payload["truncated_reason"] == "max_rows"
 
 
 async def test_run_query_cuts_rows_at_max_result_bytes(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db)
-    await _put_settings(client, admin_token, max_result_bytes=1024)
+    headers = await create_mcp_key(seeded_db)
+    await put_mcp_settings(client, admin_token, max_result_bytes=1024)
     rows = [[i, "x" * 100] for i in range(50)]
     with _postgres(_query_response(rows)):
-        result = await _call(
+        result = await mcp_call(
             client, headers, "run_query", {"database": "maindb", "sql": "SELECT id, name FROM users"}
         )
-    text = _text(result)
+    text = mcp_text(result)
     payload = json.loads(text)
     assert 0 < payload["row_count"] < 50
     assert payload["truncated_reason"] == "max_result_bytes"
@@ -523,11 +404,11 @@ async def test_search_templates_finds_what_the_key_may_run(client, seeded_db, ga
     await _create_template(
         seeded_db, path="sales/daily", name="Daily sales", sql="SELECT 1", db_alias="otherdb"
     )
-    headers = await _create_api_key(seeded_db, databases=["maindb", "otherdb"])
-    other_key = await _create_api_key(seeded_db, "maindb-only")
+    headers = await create_mcp_key(seeded_db, databases=["maindb", "otherdb"])
+    other_key = await create_mcp_key(seeded_db, "maindb-only")
     with _postgres():
-        result = await _call(client, headers, "search_templates", {})
-        payload = json.loads(_text(result))
+        result = await mcp_call(client, headers, "search_templates", {})
+        payload = json.loads(mcp_text(result))
         assert [t["template"] for t in payload["templates"]] == ["reports/users", "sales/daily"]
         assert payload["total"] == 2 and payload["truncated"] is False
         users = payload["templates"][0]
@@ -536,51 +417,51 @@ async def test_search_templates_finds_what_the_key_may_run(client, seeded_db, ga
         assert "SELECT id, name FROM users" in users["sql"]
 
         # Every word must match path, name or description (case-insensitive).
-        result = await _call(client, headers, "search_templates", {"query": "USERS report"})
-        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["reports/users"]
-        result = await _call(client, headers, "search_templates", {"database": "otherdb"})
-        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["sales/daily"]
-        result = await _call(client, headers, "search_templates", {"limit": 1})
-        payload = json.loads(_text(result))
+        result = await mcp_call(client, headers, "search_templates", {"query": "USERS report"})
+        assert [t["template"] for t in json.loads(mcp_text(result))["templates"]] == ["reports/users"]
+        result = await mcp_call(client, headers, "search_templates", {"database": "otherdb"})
+        assert [t["template"] for t in json.loads(mcp_text(result))["templates"]] == ["sales/daily"]
+        result = await mcp_call(client, headers, "search_templates", {"limit": 1})
+        payload = json.loads(mcp_text(result))
         assert len(payload["templates"]) == 1 and payload["truncated"] is True
 
         # A key only finds templates on databases it may use.
-        result = await _call(client, other_key, "search_templates", {})
-        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["reports/users"]
+        result = await mcp_call(client, other_key, "search_templates", {})
+        assert [t["template"] for t in json.loads(mcp_text(result))["templates"]] == ["reports/users"]
     assert gateway.calls == []
 
 
 async def test_run_template_runs_by_path_or_name_with_the_key(client, seeded_db, gateway):
     await _create_template(seeded_db, default_limit=500)
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres() as execute_query:
-        tools = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+        tools = (await mcp_rpc(client, headers, "tools/list")).json()["result"]["tools"]
         tool = next(t for t in tools if t["name"] == "run_template")
         assert tool["inputSchema"]["required"] == ["template"]
         assert tool["annotations"]["readOnlyHint"] is True
 
-        result = await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
+        result = await mcp_call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
         assert result["isError"] is False, result
-        assert json.loads(_text(result))["rows"] == [[1, "alice"]]
+        assert json.loads(mcp_text(result))["rows"] == [[1, "alice"]]
         kwargs = execute_query.await_args.kwargs
         assert kwargs["params"] == {"id": 1}
         # The template's default_limit (500) is clamped to max_rows (200).
         assert kwargs["limit"] == 200
 
-        result = await _call(
+        result = await mcp_call(
             client, headers, "run_template", {"template": "users report", "params": {"id": 2}, "row_limit": 5}
         )
         assert result["isError"] is False, result
         assert execute_query.await_args.kwargs["limit"] == 5
 
-        result = await _call(client, headers, "run_template", {"template": "reports/users"})
-        assert result["isError"] is True and "Missing template param(s): id" in _text(result)
-        result = await _call(
+        result = await mcp_call(client, headers, "run_template", {"template": "reports/users"})
+        assert result["isError"] is True and "Missing template param(s): id" in mcp_text(result)
+        result = await mcp_call(
             client, headers, "run_template", {"template": "reports/users", "params": {"id": 1, "x": 2}}
         )
-        assert "Unknown template param(s): x" in _text(result)
-        result = await _call(client, headers, "run_template", {"template": "nope"})
-        assert "search_templates" in _text(result)
+        assert "Unknown template param(s): x" in mcp_text(result)
+        result = await mcp_call(client, headers, "run_template", {"template": "nope"})
+        assert "search_templates" in mcp_text(result)
     assert len(gateway.calls) == 2
 
 
@@ -591,12 +472,12 @@ async def test_clickhouse_template_params_reach_run_template(client, seeded_db, 
         path="common_analysis/eca_metro",
         sql="SELECT 1 FROM t WHERE x IN (SELECT arrayJoin({pairs:Array(String)}))",
     )
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     # Extraction ignores the engine; the default mock executor stands in for ClickHouse.
     with _postgres() as execute_query:
-        result = await _call(client, headers, "search_templates", {"query": "eca_metro"})
-        assert json.loads(_text(result))["templates"][0]["params"] == ["pairs"]
-        result = await _call(
+        result = await mcp_call(client, headers, "search_templates", {"query": "eca_metro"})
+        assert json.loads(mcp_text(result))["templates"][0]["params"] == ["pairs"]
+        result = await mcp_call(
             client,
             headers,
             "run_template",
@@ -604,8 +485,8 @@ async def test_clickhouse_template_params_reach_run_template(client, seeded_db, 
         )
         assert result["isError"] is False, result
         assert execute_query.await_args.kwargs["params"] == {"pairs": ["LOT1|W01"]}
-        result = await _call(client, headers, "run_template", {"template": "common_analysis/eca_metro"})
-    assert "Missing template param(s): pairs" in _text(result)
+        result = await mcp_call(client, headers, "run_template", {"template": "common_analysis/eca_metro"})
+    assert "Missing template param(s): pairs" in mcp_text(result)
 
 
 async def test_neo4j_template_params_reach_run_template(client, seeded_db, gateway):
@@ -616,7 +497,7 @@ async def test_neo4j_template_params_reach_run_template(client, seeded_db, gatew
         path="graph/friends",
         sql="MATCH (:Person {id: $id})-[:KNOWS]->(f) RETURN f.name AS name",
     )
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres(db_type="neo4j"), patch(
         "app.routers.query.connection_manager.get_neo4j_driver", return_value=MagicMock()
     ), patch(
@@ -626,31 +507,30 @@ async def test_neo4j_template_params_reach_run_template(client, seeded_db, gatew
         new_callable=AsyncMock,
         return_value=_query_response([["bob"]]),
     ) as execute_neo4j:
-        result = await _call(client, headers, "search_templates", {"query": "friends"})
-        assert json.loads(_text(result))["templates"][0]["params"] == ["id"]
-        result = await _call(
+        result = await mcp_call(client, headers, "search_templates", {"query": "friends"})
+        assert json.loads(mcp_text(result))["templates"][0]["params"] == ["id"]
+        result = await mcp_call(
             client, headers, "run_template", {"template": "graph/friends", "params": {"id": 7}}
         )
         assert result["isError"] is False, result
         assert execute_neo4j.await_args.kwargs["params"] == {"id": 7}
-        result = await _call(client, headers, "run_template", {"template": "graph/friends"})
-    assert "Missing template param(s): id" in _text(result)
+        result = await mcp_call(client, headers, "run_template", {"template": "graph/friends"})
+    assert "Missing template param(s): id" in mcp_text(result)
 
 
 async def test_search_templates_shows_a_saved_sample(client, seeded_db, gateway):
     await _create_template(seeded_db)
     await _create_template(seeded_db, path="reports/all", sql="SELECT id FROM users")
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         template = (
             await db.execute(select(QueryTemplate).where(QueryTemplate.path == "reports/users"))
         ).scalar_one()
         template.sample_params = '{"id": 7}'
         await db.commit()
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres():
-        result = await _call(client, headers, "search_templates", {})
-    found = {t["template"]: t for t in json.loads(_text(result))["templates"]}
+        result = await mcp_call(client, headers, "search_templates", {})
+    found = {t["template"]: t for t in json.loads(mcp_text(result))["templates"]}
     # An example call known to return rows; absent when the template has none.
     assert found["reports/users"]["sample_params"] == {"id": 7}
     assert "sample_params" not in found["reports/all"]
@@ -659,26 +539,26 @@ async def test_search_templates_shows_a_saved_sample(client, seeded_db, gateway)
 async def test_run_template_asks_for_a_path_when_names_collide(client, seeded_db, gateway):
     await _create_template(seeded_db, path="a/users")
     await _create_template(seeded_db, path="b/users")
-    headers = await _create_api_key(seeded_db)
+    headers = await create_mcp_key(seeded_db)
     with _postgres():
-        result = await _call(client, headers, "run_template", {"template": "Users report", "params": {"id": 1}})
+        result = await mcp_call(client, headers, "run_template", {"template": "Users report", "params": {"id": 1}})
     assert result["isError"] is True
-    assert "a/users, b/users" in _text(result)
+    assert "a/users, b/users" in mcp_text(result)
     assert gateway.calls == []
 
 
 async def test_excluded_templates_are_hidden_from_mcp(client, seeded_db, admin_token, gateway):
     await _create_template(seeded_db)
     await _create_template(seeded_db, path="sales/daily", name="Daily sales", sql="SELECT 1")
-    headers = await _create_api_key(seeded_db)
-    await _put_settings(client, admin_token, excluded_templates=[" reports/users ", "reports/users"])
+    headers = await create_mcp_key(seeded_db)
+    await put_mcp_settings(client, admin_token, excluded_templates=[" reports/users ", "reports/users"])
     resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
     assert resp.json()["excluded_templates"] == ["reports/users"]
 
     with _postgres():
-        result = await _call(client, headers, "search_templates", {})
-        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["sales/daily"]
-        result = await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
+        result = await mcp_call(client, headers, "search_templates", {})
+        assert [t["template"] for t in json.loads(mcp_text(result))["templates"]] == ["sales/daily"]
+        result = await mcp_call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
     assert result["isError"] is True
     assert gateway.calls == []
 
@@ -690,11 +570,11 @@ async def test_search_templates_keeps_whole_entries_within_max_result_bytes(
         await _create_template(
             seeded_db, path=f"big/t{index}", sql="SELECT " + ", ".join(f"c{i}" for i in range(300))
         )
-    headers = await _create_api_key(seeded_db)
-    await _put_settings(client, admin_token, max_result_bytes=4096)
+    headers = await create_mcp_key(seeded_db)
+    await put_mcp_settings(client, admin_token, max_result_bytes=4096)
     with _postgres():
-        result = await _call(client, headers, "search_templates", {})
-    text = _text(result)
+        result = await mcp_call(client, headers, "search_templates", {})
+    text = mcp_text(result)
     payload = json.loads(text)  # still valid JSON: entries are dropped, not cut
     assert 0 < len(payload["templates"]) < 10
     assert payload["total"] == 10 and payload["truncated"] is True
@@ -723,16 +603,16 @@ def _s3_object(body: bytes, content_type: str = "text/plain"):
 async def test_s3_read_object_returns_text_and_marks_truncation(
     client, seeded_db, admin_token, gateway
 ):
-    headers = await _create_api_key(seeded_db, databases=["store"])
-    await _put_settings(client, admin_token, max_result_bytes=1024)
+    headers = await create_mcp_key(seeded_db, databases=["store"])
+    await put_mcp_settings(client, admin_token, max_result_bytes=1024)
     # 1023 ASCII bytes then a 3-byte character cut by the 1024-byte cap.
     with _s3_object(("a" * 1023 + "가나").encode()) as read_prefix:
-        result = await _call(
+        result = await mcp_call(
             client, headers, "s3_read_object", {"connection": "store", "bucket": "b", "key": "k.txt"}
         )
     read_prefix.assert_awaited_once_with("store", "b", "k.txt", 1024)
     assert result["isError"] is False, result
-    meta_text, text = _text(result, 0), _text(result, 1)
+    meta_text, text = mcp_text(result, 0), mcp_text(result, 1)
     meta = json.loads(meta_text)
     assert meta["truncated"] is True and meta["size"] == 1029
     # Metadata and text together stay within max_result_bytes, marker included.
@@ -741,21 +621,21 @@ async def test_s3_read_object_returns_text_and_marks_truncation(
 
 
 async def test_s3_refuses_binary_and_foreign_connections(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["store"])
+    headers = await create_mcp_key(seeded_db, databases=["store"])
     with _s3_object(b"\x89PNG\x00\x00", "image/png"):
-        result = await _call(
+        result = await mcp_call(
             client, headers, "s3_read_object", {"connection": "store", "bucket": "b", "key": "k"}
         )
     assert result["isError"] is True
-    assert "UTF-8" in _text(result)
+    assert "UTF-8" in mcp_text(result)
 
-    result = await _call(client, headers, "s3_list_buckets", {"connection": "elsewhere"})
+    result = await mcp_call(client, headers, "s3_list_buckets", {"connection": "elsewhere"})
     assert result["isError"] is True
-    assert "elsewhere" in _text(result)
+    assert "elsewhere" in mcp_text(result)
 
 
 async def test_s3_list_objects_drops_null_optionals(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["store"])
+    headers = await create_mcp_key(seeded_db, databases=["store"])
     with patch("app.routers.s3.s3_manager.has_connection", return_value=True), patch(
         "app.routers.s3.s3_manager.allowed_buckets", return_value=None
     ), patch(
@@ -763,7 +643,7 @@ async def test_s3_list_objects_drops_null_optionals(client, seeded_db, gateway):
         new_callable=AsyncMock,
         return_value={"folders": [], "objects": []},
     ) as list_objects:
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "s3_list_objects",
@@ -774,7 +654,7 @@ async def test_s3_list_objects_drops_null_optionals(client, seeded_db, gateway):
 
 
 async def test_nas_read_file_reads_the_beginning(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
 
     async def chunks():
         yield b"hello "
@@ -785,13 +665,13 @@ async def test_nas_read_file_reads_the_beginning(client, seeded_db, gateway):
         new_callable=AsyncMock,
         return_value=(chunks(), {"size": 11, "content_type": "text/plain", "filename": "a.txt"}),
     ) as open_stream:
-        result = await _call(
+        result = await mcp_call(
             client, headers, "nas_read_file", {"connection": "share", "path": "docs/a.txt"}
         )
     open_stream.assert_awaited_once_with("share", "docs/a.txt", length=65_536)
     assert result["isError"] is False, result
-    assert _text(result, 1) == "hello world"
-    assert json.loads(_text(result, 0))["truncated"] is False
+    assert mcp_text(result, 1) == "hello world"
+    assert json.loads(mcp_text(result, 0))["truncated"] is False
 
 
 # ── REST endpoints the tools use ────────────────────────────────────────────
@@ -856,13 +736,12 @@ async def test_admin_settings_round_trip_and_audit(client, admin_token, seeded_d
     assert resp.status_code == 200
     assert resp.json() == mcp_tools.McpSettings().model_dump()
 
-    await _put_settings(client, admin_token, max_rows=10, s3=False)
+    await put_mcp_settings(client, admin_token, max_rows=10, s3=False)
     resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
     assert resp.json()["max_rows"] == 10
     assert resp.json()["tool_groups"]["s3"] is False
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         entry = (
             await db.execute(select(AdminAuditLog).where(AdminAuditLog.resource_type == "mcp_settings"))
         ).scalar_one()
@@ -882,7 +761,7 @@ async def test_admin_settings_validate_and_need_write_permission(client, admin_t
 async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, seeded_db):
     await _create_template(seeded_db)
     await _create_template(seeded_db, path="hidden/one", enabled=False)
-    await _create_api_key(seeded_db, routes=["query-api", "s3-api"])
+    await create_mcp_key(seeded_db, routes=["query-api", "s3-api"])
     with _postgres():
         resp = await client.get(
             "/admin/mcp/preview", params={"consumer": "agent"}, headers=auth_header(admin_token)
@@ -919,69 +798,22 @@ async def test_admin_template_list_includes_disabled_ones(client, admin_token, u
     assert resp.status_code == 403
 
 
-
 # ── Gateway APIs ────────────────────────────────────────────────────────────
-
-EXT_ROUTES = [
-    {
-        "id": "orders",
-        "name": "Orders",
-        "uri": "/api/ext/orders/*",
-        "methods": ["GET", "POST", "DELETE"],
-        "plugins": {"key-auth": {}},
-        "desc": "Order service",
-    },
-    # More specific than orders: answers its sub-paths, and is not offered.
-    {"id": "orders-admin", "name": "Orders admin", "uri": "/api/ext/orders/admin/*", "plugins": {"key-auth": {}}},
-    {"id": "status", "name": "Status", "uri": "/api/ext/status", "methods": ["GET"]},
-    {"id": "put-only", "name": "Put only", "uri": "/api/ext/put", "methods": ["PUT"]},
-    {"id": "hosted", "name": "Hosted", "uri": "/api/ext/h/*", "hosts": ["api.example.com"]},
-    {"id": "query-api", "name": "query-api", "uri": "/api/query/*"},
-    # Conditional routes under orders: an MCP call can meet both conditions
-    # (it sets the query args; it comes from inside the network).
-    {"id": "orders-v", "name": "Orders v", "uri": "/api/ext/orders/v/*", "vars": [["arg_x", "==", "1"]]},
-    {"id": "orders-internal", "name": "Orders internal", "uri": "/api/ext/orders/internal/*", "remote_addrs": ["0.0.0.0/0"]},
-    # Disabled: APISIX never picks it.
-    {"id": "orders-off", "name": "Orders off", "uri": "/api/ext/orders/off/*", "status": 0},
-    # Plugins bound through a service: whether key-auth runs is unknown.
-    {"id": "svc", "name": "Service bound", "uri": "/api/ext/svc/*", "service_id": "s1"},
-    # key-auth configured but switched off: an open route.
-    {"id": "meta-off", "name": "Meta off", "uri": "/api/ext/meta/*", "plugins": {"key-auth": {"_meta": {"disable": True}}}},
-]
-EXT_KEY_ROUTES = [*ALL_ROUTES, "orders", "orders-admin", "status", "meta-off"]
-
-
-@contextmanager
-def _routes(routes: list[dict] | None = None):
-    with patch(
-        "app.services.mcp_tools.apisix_client.list_resources",
-        new_callable=AsyncMock,
-        return_value={"items": EXT_ROUTES if routes is None else routes},
-    ) as listing:
-        yield listing
-
-
-async def _expose(client, admin_token, *routes: str | tuple[str, str]) -> None:
-    exposed = [
-        {"route_id": r, "description": ""} if isinstance(r, str) else {"route_id": r[0], "description": r[1]}
-        for r in routes
-    ]
-    await _put_settings(client, admin_token, exposed_routes=exposed)
 
 
 async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, admin_token):
-    granted = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    ungranted = await _create_api_key(seeded_db, "plain")
-    with _routes() as listing:
-        assert "search_apis" not in await _tool_names(client, granted)
+    granted = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    ungranted = await create_mcp_key(seeded_db, "plain")
+    with ext_route_listing() as listing:
+        assert "search_apis" not in await mcp_tool_names(client, granted)
         # Nothing offered to this key: tools/list does not ask APISIX.
         listing.assert_not_awaited()
-        await _expose(client, admin_token, "orders")
-        names = await _tool_names(client, granted)
+        await expose_routes(client, admin_token, "orders")
+        names = await mcp_tool_names(client, granted)
         assert names[-5:] == ["search_apis", "call_api", "download_artifact", "stage_artifacts", "upload_staged_artifacts"]
-        assert "search_apis" not in await _tool_names(client, ungranted)
-        await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
-        assert "search_apis" not in await _tool_names(client, granted)
+        assert "search_apis" not in await mcp_tool_names(client, ungranted)
+        await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
+        assert "search_apis" not in await mcp_tool_names(client, granted)
     # The route listing is cached: one APISIX call for all of the above.
     assert listing.await_count == 1
 
@@ -995,29 +827,29 @@ async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, ad
     ids=["deleted", "disabled"],
 )
 async def test_api_tools_go_when_the_offered_route_does(client, seeded_db, admin_token, routes):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
-    with _routes(routes):
-        names = await _tool_names(client, headers)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
+    with ext_route_listing(routes):
+        names = await mcp_tool_names(client, headers)
     assert "search_apis" not in names and "call_api" not in names
 
 
 async def test_api_tools_stay_when_the_route_listing_fails(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     with patch(
         "app.services.mcp_tools.apisix_client.list_resources", new_callable=AsyncMock, side_effect=OSError("down")
     ):
-        assert "call_api" in await _tool_names(client, headers)
+        assert "call_api" in await mcp_tool_names(client, headers)
         # call_api reads its own fresh listing, so it fails cleanly.
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
     assert result["isError"] is True
-    assert "could not be read" in _text(result)
+    assert "could not be read" in mcp_text(result)
     assert gateway.calls == []
 
 
 async def test_deleting_a_route_drops_it_from_mcp(client, admin_token):
-    await _expose(client, admin_token, "orders", ("status", "Health check"))
+    await expose_routes(client, admin_token, "orders", ("status", "Health check"))
     with patch("app.routers.gateway.apisix_client.get_resource", new_callable=AsyncMock, return_value={"id": "orders"}), patch(
         "app.routers.gateway.apisix_client.delete_resource", new_callable=AsyncMock
     ):
@@ -1031,14 +863,14 @@ async def test_deleting_a_route_drops_it_from_mcp(client, admin_token):
 
 
 async def test_search_apis_lists_offered_routes_with_notes(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", ("status", "Health check. GET only."), "put-only")
-    with _routes():
-        tools = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", ("status", "Health check. GET only."), "put-only")
+    with ext_route_listing():
+        tools = (await mcp_rpc(client, headers, "tools/list")).json()["result"]["tools"]
         call_api = next(t for t in tools if t["name"] == "call_api")
         assert call_api["annotations"]["readOnlyHint"] is False
-        result = await _call(client, headers, "search_apis", {})
-        apis = json.loads(_text(result))["apis"]
+        result = await mcp_call(client, headers, "search_apis", {})
+        apis = json.loads(mcp_text(result))["apis"]
         assert apis == [
             {
                 "api": "orders",
@@ -1055,23 +887,23 @@ async def test_search_apis_lists_offered_routes_with_notes(client, seeded_db, ad
                 "description": "Health check. GET only.",
             },
         ]
-        result = await _call(client, headers, "search_apis", {"query": "health"})
-        assert [a["api"] for a in json.loads(_text(result))["apis"]] == ["status"]
+        result = await mcp_call(client, headers, "search_apis", {"query": "health"})
+        assert [a["api"] for a in json.loads(mcp_text(result))["apis"]] == ["status"]
     assert gateway.calls == []
 
 
 async def test_call_api_goes_out_on_the_route_with_the_key(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", "status", "meta-off")
-    with _routes():
-        result = await _call(
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", "status", "meta-off")
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "call_api",
             {"api": "orders", "method": "get", "path": "/api/ext/orders/v1/items", "query": {"q": "a b", "id": [1, 2]}},
         )
         assert result["isError"] is False, result
-        meta = json.loads(_text(result, 0))
+        meta = json.loads(mcp_text(result, 0))
         assert meta == {
             "api": "orders",
             "method": "GET",
@@ -1080,29 +912,29 @@ async def test_call_api_goes_out_on_the_route_with_the_key(client, seeded_db, ad
             "content_type": "application/json",
             "truncated": False,
         }
-        assert json.loads(_text(result, 1)) == {"method": "GET", "path": "/api/ext/orders/v1/items"}
+        assert json.loads(mcp_text(result, 1)) == {"method": "GET", "path": "/api/ext/orders/v1/items"}
         sent = gateway.external[-1]
         assert sent.headers["apikey"] == "key:agent"
         assert sent.url.query == b"q=a+b&id=1&id=2"
 
-        result = await _call(
+        result = await mcp_call(
             client, headers, "call_api", {"api": "Orders", "method": "POST", "path": "/api/ext/orders/new", "body": {"n": 1}}
         )
         assert result["isError"] is False, result
         assert json.loads(gateway.external[-1].content) == {"n": 1}
 
         # An open route: a single exact path is the default, and the key stays home.
-        result = await _call(client, headers, "call_api", {"api": "status", "method": "GET"})
+        result = await mcp_call(client, headers, "call_api", {"api": "status", "method": "GET"})
         assert result["isError"] is False, result
         assert "apikey" not in gateway.external[-1].headers
         # Neither does it go to a route whose key-auth is switched off.
-        result = await _call(client, headers, "call_api", {"api": "meta-off", "method": "GET", "path": "/api/ext/meta/x"})
+        result = await mcp_call(client, headers, "call_api", {"api": "meta-off", "method": "GET", "path": "/api/ext/meta/x"})
         assert result["isError"] is False, result
         assert "apikey" not in gateway.external[-1].headers
         # A disabled route does not compete; an encoded non-ASCII path is fine.
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/off/x"})
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/off/x"})
         assert result["isError"] is False, result
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/%EA%B0%80"})
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/%EA%B0%80"})
         assert result["isError"] is False, result
     assert gateway.calls == [
         ("ext", "GET", "/api/ext/orders/v1/items"),
@@ -1142,39 +974,39 @@ async def test_call_api_goes_out_on_the_route_with_the_key(client, seeded_db, ad
     ],
 )
 async def test_call_api_refuses_what_it_must_not_send(client, seeded_db, admin_token, gateway, arguments, message):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", "status")
-    with _routes():
-        result = await _call(client, headers, "call_api", arguments)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", "status")
+    with ext_route_listing():
+        result = await mcp_call(client, headers, "call_api", arguments)
     assert result["isError"] is True
-    assert message in _text(result)
+    assert message in mcp_text(result)
     assert gateway.calls == []
 
 
 async def test_call_api_reports_errors_binary_and_truncation(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=1024)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=1024)
     args = {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"}
-    with _routes():
+    with ext_route_listing():
         gateway.reply = httpx.Response(404, json={"detail": "no such order"})
-        result = await _call(client, headers, "call_api", args)
+        result = await mcp_call(client, headers, "call_api", args)
         assert result["isError"] is True
-        assert json.loads(_text(result, 0))["status"] == 404
-        assert "no such order" in _text(result, 1)
+        assert json.loads(mcp_text(result, 0))["status"] == 404
+        assert "no such order" in mcp_text(result, 1)
 
         gateway.reply = httpx.Response(200, content=b"\x89PNG", headers={"content-type": "image/png"})
-        result = await _call(client, headers, "call_api", args)
+        result = await mcp_call(client, headers, "call_api", args)
         assert result["isError"] is True
-        assert "binary response" in _text(result, 1)
+        assert "binary response" in mcp_text(result, 1)
 
         # Cut at the read, mid-character: the partial character is held back.
         gateway.reply = httpx.Response(
             200, content=("가" * 1000).encode(), headers={"content-type": "text/plain; charset=utf-8"}
         )
-        result = await _call(client, headers, "call_api", args)
+        result = await mcp_call(client, headers, "call_api", args)
         assert result["isError"] is False
-        assert json.loads(_text(result, 0))["truncated"] is True
-        text = _text(result, 1)
+        assert json.loads(mcp_text(result, 0))["truncated"] is True
+        text = mcp_text(result, 1)
         assert set(text.removesuffix(mcp_tools._TRUNCATION_MARKER)) == {"가"}
         assert sum(len(item["text"].encode()) for item in result["content"]) <= 1024
 
@@ -1182,21 +1014,21 @@ async def test_call_api_reports_errors_binary_and_truncation(client, seeded_db, 
         gateway.reply = httpx.Response(
             200, content=("가" * 500).encode("euc-kr"), headers={"content-type": "text/plain; charset=euc-kr"}
         )
-        result = await _call(client, headers, "call_api", args)
-    assert json.loads(_text(result, 0))["truncated"] is True
-    assert set(_text(result, 1).removesuffix(mcp_tools._TRUNCATION_MARKER)) == {"가"}
+        result = await mcp_call(client, headers, "call_api", args)
+    assert json.loads(mcp_text(result, 0))["truncated"] is True
+    assert set(mcp_text(result, 1).removesuffix(mcp_tools._TRUNCATION_MARKER)) == {"가"}
     assert sum(len(item["text"].encode()) for item in result["content"]) <= 1024
 
 
 async def test_call_api_yields_to_a_broader_host_route(client, seeded_db, admin_token, gateway):
     # radixtree_host_uri tries host routes first, whatever their specificity.
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     routes = [*EXT_ROUTES, {"id": "wide", "uri": "/api/*", "hosts": ["apisix"]}]
-    with _routes(routes):
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+    with ext_route_listing(routes):
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
     assert result["isError"] is True
-    assert "another gateway route" in _text(result)
+    assert "another gateway route" in mcp_text(result)
     assert gateway.calls == []
 
 
@@ -1223,29 +1055,29 @@ async def test_call_api_yields_to_a_broader_host_route(client, seeded_db, admin_
 async def test_call_api_yields_to_a_star_inside_another_uri(
     client, seeded_db, admin_token, gateway, uri, priority, path, sent
 ):
-    headers = await _create_api_key(seeded_db, routes=[*EXT_KEY_ROUTES, "audit"])
-    await _expose(client, admin_token, "orders", "audit")
+    headers = await create_mcp_key(seeded_db, routes=[*EXT_KEY_ROUTES, "audit"])
+    await expose_routes(client, admin_token, "orders", "audit")
     # Open, so a call it took would also hand the caller's key to its upstream.
     routes = [*EXT_ROUTES, {"id": "audit", "name": "Audit", "uri": uri, "priority": priority}]
-    with _routes(routes):
+    with ext_route_listing(routes):
         # Offered and granted, but what it answers cannot be told: not listed.
-        apis = json.loads(_text(await _call(client, headers, "search_apis", {})))["apis"]
+        apis = json.loads(mcp_text(await mcp_call(client, headers, "search_apis", {})))["apis"]
         assert [api["api"] for api in apis] == ["orders"]
-        result = await _call(client, headers, "call_api", {"api": "audit", "method": "GET", "path": path})
-        assert "call search_apis" in _text(result)
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": path})
+        result = await mcp_call(client, headers, "call_api", {"api": "audit", "method": "GET", "path": path})
+        assert "call search_apis" in mcp_text(result)
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": path})
     if sent:
         assert result["isError"] is False, result
         assert gateway.calls == [("ext", "GET", path)]
     else:
         assert result["isError"] is True
-        assert "another gateway route" in _text(result)
+        assert "another gateway route" in mcp_text(result)
         assert gateway.calls == []
 
 
 async def test_call_api_bounds_a_trickling_answer(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
 
     class Trickle(httpx.AsyncByteStream):
         async def __aiter__(self):
@@ -1254,10 +1086,10 @@ async def test_call_api_bounds_a_trickling_answer(client, seeded_db, admin_token
                 await asyncio.sleep(0.05)
 
     gateway.reply = httpx.Response(200, stream=Trickle(), headers={"content-type": "text/plain"})
-    with _routes(), patch.object(mcp_tools, "_route_timeout", return_value=0.3):
-        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+    with ext_route_listing(), patch.object(mcp_tools, "_route_timeout", return_value=0.3):
+        result = await mcp_call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
     assert result["isError"] is True
-    assert "did not answer within" in _text(result)
+    assert "did not answer within" in mcp_text(result)
 
 
 async def test_exposed_routes_are_validated(client, admin_token):
@@ -1274,7 +1106,7 @@ async def test_exposed_routes_are_validated(client, admin_token):
 
 
 async def test_admin_routes_list_offerable_routes(client, admin_token, user_token):
-    with _routes():
+    with ext_route_listing():
         resp = await client.get("/admin/mcp/routes", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert [route["route_id"] for route in resp.json()] == ["meta-off", "orders", "orders-admin", "status"]
@@ -1287,7 +1119,7 @@ async def test_admin_routes_list_offerable_routes(client, admin_token, user_toke
         "key_auth": False,
         "description": "",
     }
-    with _routes():
+    with ext_route_listing():
         resp = await client.get("/admin/mcp/routes", headers=auth_header(user_token))
     assert resp.status_code == 403
     with patch(
@@ -1298,9 +1130,9 @@ async def test_admin_routes_list_offerable_routes(client, admin_token, user_toke
 
 
 async def test_admin_preview_lists_the_keys_apis(client, admin_token, seeded_db):
-    await _create_api_key(seeded_db, routes=["mcp-api", "orders"])
-    await _expose(client, admin_token, "orders", "status")
-    with _routes():
+    await create_mcp_key(seeded_db, routes=["mcp-api", "orders"])
+    await expose_routes(client, admin_token, "orders", "status")
+    with ext_route_listing():
         resp = await client.get("/admin/mcp/preview", params={"consumer": "agent"}, headers=auth_header(admin_token))
     preview = resp.json()
     assert [api["route_id"] for api in preview["apis"]] == ["orders"]

@@ -2,47 +2,27 @@
 firewall request) and the host neighbourhood the connection map draws."""
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock
-
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ApiKeyAccess
 from app.services import network_map
 from tests.conftest import auth_header
+from tests.helpers import HOSTS_A2_B1, REGIONS_AB, insert_api_key, seed_network, sessions
 
 
-@pytest.fixture(autouse=True)
-def _no_gateway(monkeypatch):
-    monkeypatch.setattr(
-        network_map.apisix_client, "list_resources", AsyncMock(return_value={"items": []})
-    )
-    network_map.clear_gateway_cache()
-    yield
-    network_map.clear_gateway_cache()
+pytestmark = pytest.mark.usefixtures("no_gateway")
 
 
 async def _agent(seeded_db, name="finder", routes=("network-api", "network-write-api")) -> dict[str, str]:
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session() as db:
-        db.add(ApiKeyAccess(consumer_name=name, allowed_routes=json.dumps(list(routes))))
-        await db.commit()
-    return {"X-Consumer-Username": name}
+    return await insert_api_key(seeded_db, name, allowed_routes=routes)
 
 
 async def _setup(client, h) -> dict[str, int]:
     """Regions A (a1, a2), B (b1, b2), C (c1); b1 is opened to a1 and a2 on
     8000-8010 and to a1 alone on 9000; 10.1.0.0/16 reaches c1 on 7000-7001."""
-    ids: dict[str, int] = {}
-    for name, cidr in (("A", "10.1.0.0/16"), ("B", "10.2.0.0/16"), ("C", "10.3.0.0/16")):
-        resp = await client.post("/network/regions", headers=h, json={"name": name, "cidrs": [cidr]})
-        ids[name] = resp.json()["id"]
-    for name, ip in (
-        ("a1", "10.1.0.1"), ("a2", "10.1.0.2"), ("b1", "10.2.0.1"), ("b2", "10.2.0.2"), ("c1", "10.3.0.1"),
-    ):
-        resp = await client.post("/network/hosts", headers=h, json={"name": name, "ip": ip})
-        ids[name] = resp.json()["id"]
+    ids = await seed_network(
+        client, h, {**REGIONS_AB, "C": "10.3.0.0/16"},
+        {**HOSTS_A2_B1, "b2": "10.2.0.2", "c1": "10.3.0.1"},
+    )
     for body in (
         {"src_host": "a1", "dst_host": "b1", "port_from": 8000, "port_to": 8010},
         {"src_host": "a2", "dst_host": "b1", "port_from": 8005, "port_to": 8020},
@@ -255,10 +235,9 @@ async def test_finder_errors(client, admin_token):
 async def test_finder_for_agents_redacts_discovered_names(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     await _setup(client, h)
-    session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     from app.models import DBConnection
 
-    async with session() as db:
+    async with sessions(seeded_db)() as db:
         db.add(DBConnection(
             alias="secret-orders", db_type="postgres", host="10.2.0.1", port=8003, database="o",
             username="u", password_encrypted="x", pool_size=1, max_overflow=0, query_timeout=30,

@@ -16,22 +16,7 @@ from app.services import alert_checker, server_monitor
 from app.services.alert_mutes import MuteIndex
 from app.services.alert_state import AlertStateManager
 from app.services.server_monitor import HostSignal, ServerThresholds, build_targets, evaluate_hosts
-
-
-def _host(name="web1", address="10.0.0.1:9100", enabled=True, labels=None, **overrides):
-    return SimpleNamespace(
-        name=name, address=address, enabled=enabled, labels=labels,
-        description="",
-        disk_warn_pct=overrides.get("disk_warn_pct"),
-        disk_crit_pct=overrides.get("disk_crit_pct"),
-        cpu_warn_pct=None, mem_warn_pct=None,
-        disk_mountpoints=overrides.get("disk_mountpoints"),
-        gpu_address=None, gpu_util_warn_pct=None, gpu_mem_warn_pct=None,
-    )
-
-
-def _series(host, value):
-    return {"metric": {"host": host}, "value": [0, str(value)]}
+from tests.helpers import host_series, monitored_host
 
 
 def _queries(mapping, failing=()):
@@ -208,7 +193,7 @@ async def test_state_written_back_for_a_disabled_host_is_dropped_next_cycle(monk
     state.update("server_down", "web1", is_healthy=False, trigger_after_failures=1, severity="critical")
     state.update("server_cpu", "gone", is_healthy=False, trigger_after_failures=1, severity="warning")
     state.update("db_health", "web1", is_healthy=False, trigger_after_failures=1)
-    hosts = [_host("web1", enabled=False), _host("web2")]
+    hosts = [monitored_host("web1", enabled=False), monitored_host("web2")]
     monkeypatch.setattr(
         alert_checker, "_load_server_monitoring",
         AsyncMock(return_value=(hosts, ServerThresholds(forecast_hours=0), 0)),
@@ -253,7 +238,7 @@ async def test_registry_load_failure_keeps_state(monkeypatch):
 
 @pytest.mark.parametrize("key", ["job", "instance", "mode", "mountpoint", "__scheme__", "", "1x", "a-b"])
 def test_build_targets_drops_reserved_and_invalid_labels(key):
-    entry = build_targets([_host("web1", labels=json.dumps({key: "x", "env": "prod"}))])[0]
+    entry = build_targets([monitored_host("web1", labels=json.dumps({key: "x", "env": "prod"}))])[0]
     assert entry["labels"] == {"host": "web1", "env": "prod"}
 
 
@@ -278,9 +263,9 @@ def test_host_schema_accepts_ordinary_labels():
 async def test_unmatched_mountpoints_raise_a_disk_warning():
     """A typo'd whitelist must not switch disk alerting off silently."""
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
+        q.side_effect = _queries({'up{job="nodes"}': [host_series("web1", 1)]})
         signals = await evaluate_hosts(
-            [_host("web1", disk_mountpoints="/Data")], ServerThresholds(forecast_hours=0)
+            [monitored_host("web1", disk_mountpoints="/Data")], ServerThresholds(forecast_hours=0)
         )
     disk = next(s for s in signals if s.alert_type == "server_disk")
     assert (disk.is_healthy, disk.severity, disk.value) == (False, "warning", None)
@@ -289,9 +274,9 @@ async def test_unmatched_mountpoints_raise_a_disk_warning():
 
 async def test_unmatched_mountpoints_use_critical_on_a_crit_only_host():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
+        q.side_effect = _queries({'up{job="nodes"}': [host_series("web1", 1)]})
         signals = await evaluate_hosts(
-            [_host("web1", disk_warn_pct=0, disk_crit_pct=90)], ServerThresholds(forecast_hours=0)
+            [monitored_host("web1", disk_warn_pct=0, disk_crit_pct=90)], ServerThresholds(forecast_hours=0)
         )
     disk = next(s for s in signals if s.alert_type == "server_disk")
     assert (disk.is_healthy, disk.severity) == (False, "critical")
@@ -302,11 +287,11 @@ async def test_fixed_mountpoints_refresh_the_stored_observation(monkeypatch):
     current observation must describe the real usage, not the old mismatch."""
     monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
     state = AlertStateManager()
-    host = _host("web1", disk_mountpoints="/Data")
-    for disk_series in ([], [_series("web1", 85)]):
+    host = monitored_host("web1", disk_mountpoints="/Data")
+    for disk_series in ([], [host_series("web1", 85)]):
         with patch.object(server_monitor.prometheus_client, "instant_query") as q:
             q.side_effect = _queries({
-                'up{job="nodes"}': [_series("web1", 1)],
+                'up{job="nodes"}': [host_series("web1", 1)],
                 "node_filesystem_avail_bytes": disk_series,
             })
             signals = await evaluate_hosts([host], ServerThresholds(forecast_hours=0))
@@ -321,9 +306,9 @@ async def test_fixed_mountpoints_refresh_the_stored_observation(monkeypatch):
 
 async def test_unmatched_mountpoints_stay_quiet_when_disk_is_off():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
+        q.side_effect = _queries({'up{job="nodes"}': [host_series("web1", 1)]})
         signals = await evaluate_hosts(
-            [_host("web1", disk_warn_pct=0, disk_crit_pct=0)], ServerThresholds(forecast_hours=0)
+            [monitored_host("web1", disk_warn_pct=0, disk_crit_pct=0)], ServerThresholds(forecast_hours=0)
         )
     assert all(s.alert_type != "server_disk" for s in signals)
 
@@ -332,10 +317,10 @@ async def test_failed_disk_query_is_not_read_as_unmatched_mountpoints():
     failed: list[str] = []
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _queries(
-            {'up{job="nodes"}': [_series("web1", 1)]}, failing=["node_filesystem_avail_bytes"],
+            {'up{job="nodes"}': [host_series("web1", 1)]}, failing=["node_filesystem_avail_bytes"],
         )
         signals = await evaluate_hosts(
-            [_host("web1")], ServerThresholds(forecast_hours=0), failed_queries=failed,
+            [monitored_host("web1")], ServerThresholds(forecast_hours=0), failed_queries=failed,
         )
     assert all(s.alert_type != "server_disk" for s in signals)
     assert failed == ["disk"]
@@ -343,8 +328,8 @@ async def test_failed_disk_query_is_not_read_as_unmatched_mountpoints():
 
 async def test_down_host_gets_no_unmatched_mountpoint_warning():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
-        q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 0)]})
-        signals = await evaluate_hosts([_host("web1")], ServerThresholds(forecast_hours=0))
+        q.side_effect = _queries({'up{job="nodes"}': [host_series("web1", 0)]})
+        signals = await evaluate_hosts([monitored_host("web1")], ServerThresholds(forecast_hours=0))
     assert [s.alert_type for s in signals] == ["server_down"]
 
 
@@ -353,12 +338,12 @@ async def test_down_host_gets_no_unmatched_mountpoint_warning():
 
 async def test_unchanged_targets_file_is_not_rewritten(tmp_path):
     path = tmp_path / "nodes.json"
-    await server_monitor.write_targets_file([_host("web1")], str(path))
+    await server_monitor.write_targets_file([monitored_host("web1")], str(path))
     os.utime(path, (1, 1))
-    await server_monitor.write_targets_file([_host("web1")], str(path))
+    await server_monitor.write_targets_file([monitored_host("web1")], str(path))
     assert os.stat(path).st_mtime == 1
     await server_monitor.write_targets_file(
-        [_host("web1"), _host("web2", "10.0.0.2:9100")], str(path)
+        [monitored_host("web1"), monitored_host("web2", "10.0.0.2:9100")], str(path)
     )
     assert os.stat(path).st_mtime != 1
     assert len(json.loads(path.read_text())) == 2

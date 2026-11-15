@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import AlertMute
 from app.routers import alerts as alerts_router
@@ -23,6 +22,7 @@ from app.services import alert_checker
 from app.services.alert_mutes import MuteIndex, build_index, resource_type_for_rule
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
+from tests.helpers import sessions
 
 MUTES_URL = "/admin/alerts/mutes"
 
@@ -91,8 +91,7 @@ async def test_upsert_replaces_existing_window(client, admin_token, seeded_db):
 
     body = await _get_mutes(client, admin_token)
     assert len(body["mutes"]) == 1
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         rows = (await db.execute(select(AlertMute))).scalars().all()
     assert len(rows) == 1
 
@@ -123,7 +122,7 @@ async def test_listing_does_not_write_when_nothing_expired(seeded_db):
     """A read-path DELETE would take SQLite's writer lock on every listing."""
     from app.services import alert_mutes
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(AlertMute(
             resource_type="db", resource_id="live",
@@ -144,7 +143,7 @@ async def test_listing_does_not_write_when_nothing_expired(seeded_db):
 async def test_purge_reports_how_many_it_removed(seeded_db):
     from app.services import alert_mutes
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     past = datetime.now(timezone.utc) - timedelta(minutes=5)
     async with session_factory() as db:
         for i in range(2):
@@ -160,7 +159,7 @@ async def test_purge_reports_how_many_it_removed(seeded_db):
 
 
 async def test_expired_mutes_are_pruned_lazily(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         db.add(AlertMute(
             resource_type="db",
@@ -716,7 +715,7 @@ async def test_load_mute_index_survives_a_broken_table(caplog):
 async def test_load_mute_index_reads_active_rows(seeded_db):
     from app.services import alert_mutes
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     now = datetime.now(timezone.utc)
     async with session_factory() as db:
         db.add(AlertMute(
@@ -744,7 +743,7 @@ async def test_lost_insert_race_is_audited_as_an_update(client, admin_token, see
     entry must say so rather than claiming a create with an empty before."""
     from app.database import get_db
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     rival_until = datetime.now(timezone.utc) + timedelta(hours=9)
 
     class _RacingSession:

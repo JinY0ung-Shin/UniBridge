@@ -1,6 +1,9 @@
 """Tests for blue/green active-color detection (app.services.active_color)."""
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 from prometheus_client import REGISTRY
 
@@ -142,3 +145,71 @@ def test_node_normalization_comes_from_the_shared_helper():
     ) == {"h:9", "noport"}
     assert upstream_node_addresses(None) == set()
     assert upstream_node_addresses("weird") == set()
+
+
+# ── run_periodic ─────────────────────────────────────────────────────────────
+
+
+async def test_run_periodic_waits_first_then_runs_only_while_active(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 3:
+            raise asyncio.CancelledError
+
+    once = AsyncMock()
+    # Standby, then promoted: the color is checked on every pass.
+    active = AsyncMock(side_effect=[False, True, True])
+    failures: list[Exception] = []
+    monkeypatch.setattr(active_color.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(active_color, "is_active_instance", active)
+
+    with pytest.raises(asyncio.CancelledError):
+        await active_color.run_periodic(
+            once, interval_seconds=60, first_delay_seconds=5, on_failure=failures.append
+        )
+
+    assert sleeps == [5, 60, 60, 60]
+    assert once.await_count == 2
+    assert failures == []
+
+
+async def test_run_periodic_hands_a_failing_pass_to_on_failure_and_carries_on(monkeypatch):
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 2:
+            raise asyncio.CancelledError
+
+    boom = RuntimeError("apisix down")
+    once = AsyncMock(side_effect=[boom, None])
+    failures: list[Exception] = []
+    monkeypatch.setattr(active_color.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(active_color, "is_active_instance", AsyncMock(return_value=True))
+
+    with pytest.raises(asyncio.CancelledError):
+        await active_color.run_periodic(
+            once, interval_seconds=1, first_delay_seconds=0, on_failure=failures.append
+        )
+
+    assert failures == [boom]
+    assert once.await_count == 2
+
+
+async def test_run_periodic_lets_cancellation_through(monkeypatch):
+    monkeypatch.setattr(active_color.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(active_color, "is_active_instance", AsyncMock(return_value=True))
+    failures: list[Exception] = []
+
+    with pytest.raises(asyncio.CancelledError):
+        await active_color.run_periodic(
+            AsyncMock(side_effect=asyncio.CancelledError),
+            interval_seconds=1,
+            first_delay_seconds=0,
+            on_failure=failures.append,
+        )
+
+    assert failures == []

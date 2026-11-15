@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ApiKeyAccess, Permission
+from app.models import Permission
 from app.schemas import QueryResponse, QueryTemplateCreate, QueryTemplateUpdate
 from tests.conftest import auth_header
+from tests.helpers import insert_api_key, register_database, sessions
 
 
 def _mock_query_response() -> QueryResponse:
@@ -21,30 +21,6 @@ def _mock_query_response() -> QueryResponse:
         truncated=False,
         elapsed_ms=12,
     )
-
-
-async def _create_database(client, admin_token, alias: str = "maindb") -> None:
-    with patch(
-        "app.routers.admin.connection_manager.add_connection",
-        new_callable=AsyncMock,
-    ), patch(
-        "app.routers.admin.connection_manager.get_status",
-        return_value={"status": "registered"},
-    ):
-        resp = await client.post(
-            "/admin/query/databases",
-            json={
-                "alias": alias,
-                "db_type": "postgres",
-                "host": "localhost",
-                "port": 5432,
-                "database": "app",
-                "username": "user",
-                "password": "pass",
-            },
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 201
 
 
 async def _create_template(
@@ -72,7 +48,7 @@ async def _create_template(
 
 
 async def test_admin_can_create_and_execute_query_template(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
 
     mock_engine = MagicMock()
@@ -109,7 +85,7 @@ async def test_admin_can_create_and_execute_query_template(client, admin_token):
 
 
 async def test_template_execution_uses_database_permissions(client, admin_token, querier_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
 
     with patch(
@@ -131,7 +107,7 @@ async def test_template_execution_uses_database_permissions(client, admin_token,
 
 
 async def test_disabled_template_cannot_be_executed(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token, enabled=False)
 
     resp = await client.post(
@@ -145,7 +121,7 @@ async def test_disabled_template_cannot_be_executed(client, admin_token):
 
 
 async def test_mutating_query_template_is_rejected(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
 
     resp = await client.post(
         "/admin/query/templates",
@@ -163,7 +139,7 @@ async def test_mutating_query_template_is_rejected(client, admin_token):
 
 
 async def test_explain_analyze_mutating_query_template_is_rejected(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
 
     resp = await client.post(
         "/admin/query/templates",
@@ -181,7 +157,7 @@ async def test_explain_analyze_mutating_query_template_is_rejected(client, admin
 
 
 async def test_query_template_crud(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
 
     resp = await client.get("/admin/query/templates", headers=auth_header(admin_token))
@@ -232,8 +208,8 @@ async def _grant_db_permission(
 
 
 async def test_query_user_lists_only_accessible_templates(client, admin_token, querier_token):
-    await _create_database(client, admin_token, alias="maindb")
-    await _create_database(client, admin_token, alias="otherdb")
+    await register_database(client, admin_token, alias="maindb")
+    await register_database(client, admin_token, alias="otherdb")
     await _create_template(client, admin_token, path="reports/users", database="maindb")
     await _create_template(client, admin_token, path="reports/orders", database="otherdb")
     # The querier role can only query maindb.
@@ -249,7 +225,7 @@ async def test_query_user_lists_only_accessible_templates(client, admin_token, q
 
 
 async def test_query_user_without_db_permission_sees_no_templates(client, admin_token, querier_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
 
     resp = await client.get("/query/templates", headers=auth_header(querier_token))
@@ -261,14 +237,11 @@ async def test_query_user_without_db_permission_sees_no_templates(client, admin_
 async def test_query_user_listing_matches_select_and_table_permissions(
     client, admin_token, querier_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token, path="reports/users", sql="SELECT * FROM users")
     await _create_template(client, admin_token, path="reports/orders", sql="SELECT * FROM orders")
     await _grant_db_permission(client, admin_token, role="querier", alias="maindb")
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         result = await db.execute(
             select(Permission).where(
                 Permission.role == "querier", Permission.db_alias == "maindb"
@@ -295,7 +268,7 @@ async def test_query_templates_listing_requires_query_execute(client, user_token
 
 
 async def test_query_templates_listing_hides_disabled(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token, path="reports/users")
     await _create_template(client, admin_token, path="reports/hidden", enabled=False)
 
@@ -307,39 +280,21 @@ async def test_query_templates_listing_hides_disabled(client, admin_token):
     assert [t["path"] for t in resp.json()] == ["reports/users"]
 
 
-async def _create_api_key(
-    seeded_db, *, name: str, allowed_databases: list[str],
-    allowed_routes: list[str] | None = None,
-    allowed_tables: list[str] | None = None,
-) -> None:
-    """Insert an API-key consumer directly.
+async def _insert_query_key(seeded_db, *, name: str, allowed_routes=("query-api",), **columns) -> None:
+    """Insert an API-key consumer directly (query-api by default).
 
     Bypasses the APISIX-dependent ``POST /admin/api-keys`` endpoint so the
     discovery listing can be exercised for the API-key (agent) principal.
     """
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        db.add(
-            ApiKeyAccess(
-                consumer_name=name,
-                allowed_databases=json.dumps(allowed_databases),
-                allowed_routes=json.dumps(
-                    ["query-api"] if allowed_routes is None else allowed_routes
-                ),
-                allowed_tables=(
-                    json.dumps(allowed_tables) if allowed_tables is not None else None
-                ),
-            )
-        )
-        await db.commit()
+    await insert_api_key(seeded_db, name, allowed_routes=allowed_routes, **columns)
 
 
 async def test_apikey_lists_only_templates_on_allowed_databases(client, admin_token, seeded_db):
-    await _create_database(client, admin_token, alias="maindb")
-    await _create_database(client, admin_token, alias="otherdb")
+    await register_database(client, admin_token, alias="maindb")
+    await register_database(client, admin_token, alias="otherdb")
     await _create_template(client, admin_token, path="reports/users", database="maindb")
     await _create_template(client, admin_token, path="reports/orders", database="otherdb")
-    await _create_api_key(seeded_db, name="agent-key", allowed_databases=["maindb"])
+    await _insert_query_key(seeded_db, name="agent-key", allowed_databases=["maindb"])
 
     # No Bearer token: the X-Consumer-Username header alone authenticates as the
     # API key (dev-token mode skips the internal-proxy-secret check).
@@ -353,14 +308,14 @@ async def test_apikey_lists_only_templates_on_allowed_databases(client, admin_to
 
 
 async def test_apikey_wildcard_lists_all_enabled_templates(client, admin_token, seeded_db):
-    await _create_database(client, admin_token, alias="maindb")
-    await _create_database(client, admin_token, alias="otherdb")
+    await register_database(client, admin_token, alias="maindb")
+    await register_database(client, admin_token, alias="otherdb")
     await _create_template(client, admin_token, path="reports/users", database="maindb")
     await _create_template(client, admin_token, path="reports/orders", database="otherdb")
     await _create_template(
         client, admin_token, path="reports/hidden", database="maindb", enabled=False
     )
-    await _create_api_key(seeded_db, name="master-key", allowed_databases=["*"])
+    await _insert_query_key(seeded_db, name="master-key", allowed_databases=["*"])
 
     resp = await client.get("/query/templates", headers={"X-Consumer-Username": "master-key"})
 
@@ -372,10 +327,10 @@ async def test_apikey_wildcard_lists_all_enabled_templates(client, admin_token, 
 async def test_apikey_listing_hides_templates_outside_table_scope(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token, path="reports/users", sql="SELECT * FROM users")
     await _create_template(client, admin_token, path="reports/orders", sql="SELECT * FROM orders")
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="users-reader", allowed_databases=["maindb"],
         allowed_tables=["users"],
     )
@@ -391,7 +346,7 @@ async def test_apikey_listing_hides_templates_outside_table_scope(
 
 
 async def test_query_template_agent_guide_is_markdown(client, seeded_db):
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="guide-reader", allowed_databases=[],
         allowed_routes=["query-api"],
     )
@@ -417,8 +372,8 @@ async def test_query_template_agent_guide_is_markdown(client, seeded_db):
 async def test_agent_creates_and_deletes_template_with_write_route(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
-    await _create_api_key(
+    await register_database(client, admin_token)
+    await _insert_query_key(
         seeded_db, name="lifecycle-agent", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"], allowed_tables=["users"],
     )
@@ -465,13 +420,13 @@ async def test_agent_creates_and_deletes_template_with_write_route(
 async def test_agent_create_enforces_write_database_table_and_sql_scope(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token, alias="maindb")
-    await _create_database(client, admin_token, alias="otherdb")
-    await _create_api_key(
+    await register_database(client, admin_token, alias="maindb")
+    await register_database(client, admin_token, alias="otherdb")
+    await _insert_query_key(
         seeded_db, name="scoped-creator", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"], allowed_tables=["users"],
     )
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="read-only-creator", allowed_databases=["maindb"],
         allowed_routes=["query-api"],
     )
@@ -526,17 +481,17 @@ async def test_agent_create_enforces_write_database_table_and_sql_scope(
 async def test_agent_delete_requires_write_route_and_current_version(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="delete-agent", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"],
     )
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="read-only-delete-agent", allowed_databases=["maindb"],
         allowed_routes=["query-api"],
     )
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="wrong-table-delete-agent", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"], allowed_tables=["orders"],
     )
@@ -578,13 +533,13 @@ async def test_agent_delete_requires_write_route_and_current_version(
 async def test_template_write_route_is_independent_from_read_route(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="read-only-agent", allowed_databases=["maindb"],
         allowed_routes=["query-api"],
     )
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="write-only-agent", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"],
     )
@@ -616,9 +571,9 @@ async def test_template_write_route_is_independent_from_read_route(
 async def test_agent_template_edit_rejects_admin_only_fields(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="template-editor", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"],
     )
@@ -636,9 +591,9 @@ async def test_agent_template_edit_rejects_admin_only_fields(
 async def test_agent_template_edit_enforces_read_only_and_table_scope(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token, sql="SELECT * FROM users")
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="scoped-editor", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"], allowed_tables=["users"],
     )
@@ -666,11 +621,11 @@ async def test_agent_template_edit_cannot_replace_sql_outside_table_scope(
 ):
     # A key limited to `users` can neither list, run nor delete this template,
     # so it must not replace its SQL either (it used to: only the new SQL was checked).
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(
         client, admin_token, path="reports/orders", sql="SELECT * FROM orders"
     )
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="users-editor", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"], allowed_tables=["users"],
     )
@@ -686,9 +641,9 @@ async def test_agent_template_edit_cannot_replace_sql_outside_table_scope(
 
 
 async def test_agent_template_edit_enforces_database_scope(client, admin_token, seeded_db):
-    await _create_database(client, admin_token, alias="maindb")
+    await register_database(client, admin_token, alias="maindb")
     await _create_template(client, admin_token, database="maindb")
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="otherdb-editor", allowed_databases=["otherdb"],
         allowed_routes=["query-template-write-api"],
     )
@@ -701,9 +656,9 @@ async def test_agent_template_edit_enforces_database_scope(client, admin_token, 
 
 
 async def test_agent_template_edit_detects_stale_discovery(client, admin_token, seeded_db):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="full-template-agent", allowed_databases=["maindb"],
         allowed_routes=["query-api", "query-template-write-api"],
     )
@@ -728,9 +683,9 @@ async def test_agent_template_edit_detects_stale_discovery(client, admin_token, 
 async def test_agent_template_edit_writes_actor_and_snapshots_to_audit_log(
     client, admin_token, seeded_db
 ):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
-    await _create_api_key(
+    await _insert_query_key(
         seeded_db, name="audited-editor", allowed_databases=["maindb"],
         allowed_routes=["query-template-write-api"],
     )
@@ -799,12 +754,11 @@ async def _run_template_and_adhoc(client, admin_token, *, fail_template: bool = 
 async def test_template_runs_are_tagged_in_audit_log(client, admin_token, seeded_db):
     from app.models import AuditLog
 
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
     await _run_template_and_adhoc(client, admin_token)
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         rows = (await db.execute(select(AuditLog).order_by(AuditLog.id))).scalars().all()
     assert [(row.template_path, row.status) for row in rows] == [
         ("reports/users", "success"),
@@ -817,13 +771,12 @@ async def test_template_usage_counts_recent_runs_per_template(client, admin_toke
 
     from app.models import AuditLog
 
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
     await _create_template(client, admin_token)
     await _run_template_and_adhoc(client, admin_token)
     await _run_template_and_adhoc(client, admin_token, fail_template=True)
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         # Outside the 7-day window: not counted.
         db.add(AuditLog(
             user="admin", database_alias="maindb", sql="SELECT 1", status="success",
@@ -874,7 +827,7 @@ def test_admin_template_update_may_still_clear_the_description():
 
 
 async def test_admin_create_with_a_blank_name_is_422(client, admin_token):
-    await _create_database(client, admin_token)
+    await register_database(client, admin_token)
 
     resp = await client.post(
         "/admin/query/templates",

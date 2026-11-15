@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -11,11 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser
-from app.models import ApiKeyAccess
 from app.routers import query
 from app.schemas import (
     QueryRequest,
@@ -24,22 +21,7 @@ from app.schemas import (
     QueryTemplateAgentUpdate,
 )
 from tests.conftest import auth_header
-
-
-class _Result:
-    def __init__(self, value=None, *, rows=None, rowcount=0) -> None:
-        self.value = value
-        self.rows = list(rows or [])
-        self.rowcount = rowcount
-
-    def scalar_one_or_none(self):
-        return self.value
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self.rows
+from tests.helpers import FakeResult, insert_api_key
 
 
 def _db(*results, commit_error: Exception | None = None):
@@ -306,21 +288,6 @@ async def test_execute_timeout_survives_audit_failure(client, admin_token, caplo
     assert "Failed to write audit log for timed-out query" in caplog.text
 
 
-async def _seed_query_api_key(seeded_db, consumer_name: str) -> None:
-    session_factory = async_sessionmaker(
-        seeded_db, class_=AsyncSession, expire_on_commit=False
-    )
-    async with session_factory() as db:
-        db.add(
-            ApiKeyAccess(
-                consumer_name=consumer_name,
-                allowed_databases=json.dumps(["*"]),
-                allowed_routes=json.dumps(["query-api"]),
-            )
-        )
-        await db.commit()
-
-
 @contextmanager
 def _postgres_execution(execute_query: AsyncMock, record_metric: MagicMock):
     with (
@@ -334,7 +301,7 @@ def _postgres_execution(execute_query: AsyncMock, record_metric: MagicMock):
 
 
 async def test_query_metrics_attribute_api_key_calls_to_the_consumer(client, seeded_db):
-    await _seed_query_api_key(seeded_db, "etl-app")
+    await insert_api_key(seeded_db, "etl-app", allowed_databases=["*"], allowed_routes=["query-api"])
     record_metric = MagicMock()
     execute_query = AsyncMock(return_value=_query_response())
     with _postgres_execution(execute_query, record_metric):
@@ -376,7 +343,7 @@ async def test_query_metrics_attribute_jwt_calls_to_the_ui_consumer(client, admi
 async def test_failed_query_metrics_keep_the_api_key_consumer(
     client, seeded_db, side_effect, expected_http, expected_status
 ):
-    await _seed_query_api_key(seeded_db, "etl-app")
+    await insert_api_key(seeded_db, "etl-app", allowed_databases=["*"], allowed_routes=["query-api"])
     record_metric = MagicMock()
     execute_query = AsyncMock(side_effect=side_effect)
     with _postgres_execution(execute_query, record_metric):
@@ -393,7 +360,7 @@ async def test_failed_query_metrics_keep_the_api_key_consumer(
 
 
 async def test_rejected_statement_metric_keeps_the_api_key_consumer(client, seeded_db):
-    await _seed_query_api_key(seeded_db, "etl-app")
+    await insert_api_key(seeded_db, "etl-app", allowed_databases=["*"], allowed_routes=["query-api"])
     record_metric = MagicMock()
     with (
         patch("app.routers.query.connection_manager.get_db_type", return_value="postgres"),
@@ -487,7 +454,7 @@ async def test_execute_template_rejects_invalid_or_missing_path(
     monkeypatch, template_path
 ):
     monkeypatch.setattr(query, "_require_template_read_access", AsyncMock())
-    db = _db(_Result(None))
+    db = _db(FakeResult(None))
 
     with pytest.raises(HTTPException) as exc_info:
         await query.execute_template(
@@ -508,7 +475,7 @@ async def test_list_accessible_templates_returns_early_when_query_is_empty(
         "_template_access_scope",
         AsyncMock(return_value=(None, {}, None)),
     )
-    db = _db(_Result(rows=[]))
+    db = _db(FakeResult(None, rows=[]))
 
     result = await query.list_accessible_query_templates(
         user=CurrentUser(username="admin", role="admin"), db=db
@@ -544,7 +511,7 @@ async def test_agent_create_rejects_invalid_path(monkeypatch, template_path):
 
 async def test_agent_create_returns_404_for_missing_database(monkeypatch):
     monkeypatch.setattr(query, "_require_template_write_access", AsyncMock())
-    db = _db(_Result(None), _Result(None))
+    db = _db(FakeResult(None), FakeResult(None))
 
     with pytest.raises(HTTPException) as exc_info:
         await query.create_query_template_as_agent(
@@ -561,7 +528,7 @@ async def test_agent_create_maps_commit_race_to_conflict(monkeypatch):
     monkeypatch.setattr(query, "_require_template_write_access", AsyncMock())
     integrity_error = IntegrityError("insert", {}, RuntimeError("duplicate"))
     connection = SimpleNamespace(db_type="postgres")
-    db = _db(_Result(None), _Result(connection), commit_error=integrity_error)
+    db = _db(FakeResult(None), FakeResult(connection), commit_error=integrity_error)
 
     with pytest.raises(HTTPException) as exc_info:
         await query.create_query_template_as_agent(
@@ -616,9 +583,9 @@ async def test_agent_update_error_paths(
     monkeypatch, template_path, template, connection, user, expected
 ):
     monkeypatch.setattr(query, "_require_template_write_access", AsyncMock())
-    results = [] if template_path.startswith("..") else [_Result(template)]
+    results = [] if template_path.startswith("..") else [FakeResult(template)]
     if template is not None and getattr(template, "enabled", False):
-        results.append(_Result(connection))
+        results.append(FakeResult(connection))
     db = _db(*results)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -666,9 +633,9 @@ async def test_agent_delete_error_paths(
     monkeypatch, template_path, template, connection, user, expected
 ):
     monkeypatch.setattr(query, "_require_template_write_access", AsyncMock())
-    results = [] if template_path.startswith("..") else [_Result(template)]
+    results = [] if template_path.startswith("..") else [FakeResult(template)]
     if template is not None and getattr(template, "enabled", False):
-        results.append(_Result(connection))
+        results.append(FakeResult(connection))
     db = _db(*results)
 
     with pytest.raises(HTTPException) as exc_info:

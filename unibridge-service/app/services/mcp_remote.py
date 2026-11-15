@@ -55,6 +55,7 @@ from app.services.apisix_system_resources import (
     MCP_REMOTE_ID_PREFIX,
     MCP_REMOTE_RELAY_PATH_PREFIX,
 )
+from app.services.capped_read import read_capped
 from app.services.connection_manager import decrypt_password, encrypt_password
 
 logger = logging.getLogger(__name__)
@@ -478,12 +479,10 @@ async def _read_error_body(response: httpx.Response) -> bytes:
 
 
 async def _read_capped(response: httpx.Response, max_bytes: int) -> bytes:
-    data = bytearray()
-    async for chunk in response.aiter_bytes():
-        data.extend(chunk)
-        if len(data) > max_bytes:
-            raise RemoteError(f"The answer is over {max_bytes} bytes")
-    return bytes(data)
+    data = await read_capped(response.aiter_bytes(), max_bytes)
+    if data is None:
+        raise RemoteError(f"The answer is over {max_bytes} bytes")
+    return data
 
 
 def _answer_to(payload: Any, request_id: int) -> dict[str, Any] | None:
@@ -676,8 +675,7 @@ def _direct_client() -> httpx.AsyncClient:
     # No env proxy, like APISIX on the relay route. Unlike APISIX, which does
     # not verify upstream certificates (as on every gateway route), this checks
     # them with the service's CA settings.
-    verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
-    return httpx.AsyncClient(verify=verify, trust_env=False)
+    return httpx.AsyncClient(verify=settings.httpx_verify, trust_env=False)
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -14,14 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import metrics
 from app.config import settings, validate_settings
-from app.database import get_db, init_db
-from app.models import (
-    DBConnection,
-    MonitoredHost,
-    MonitoredService,
-    NASConnection,
-    S3Connection,
-)
+from app.database import async_session, get_db, init_db
+from app.models import DBConnection, NASConnection, S3Connection
 from app.routers import (
     admin,
     alerts,
@@ -45,16 +40,16 @@ from app.routers import (
     users,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
-from app.services.active_color import is_active_instance
-from app.services.apisix_client import upstream_node_addresses
-from app.services import llm_routes
+from app.services.active_color import is_active_instance, run_periodic
+from app.services import apisix_client, llm_routes
 from app.services.apisix_system_resources import (
+    APP_SERVICE_ROUTES,
+    INTERNAL_PROXY_ROUTE_IDS,
     LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
-    MCP_API_ROUTE_ID,
-    NETWORK_API_ROUTE_ID,
-    NETWORK_WRITE_ROUTE_ID,
-    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+    PROMETHEUS_API_ROUTE,
+    SERVICE_ROUTE_IDS,
+    ServiceRoute,
 )
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
@@ -67,28 +62,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 APISIX_INTERNAL_PROXY_HEADER = "X-UniBridge-Internal-Proxy"
-# System routes provisioned with _internal_proxy_headers() — the ones whose
-# requests reach this app through APISIX and are authenticated by that header.
-# Must stay in sync with the _internal_proxy_headers() call sites below;
-# tests/test_internal_proxy_secret.py asserts it does.
-INTERNAL_PROXY_ROUTE_IDS = (
-    "query-api",
-    QUERY_TEMPLATE_WRITE_ROUTE_ID,
-    "s3-api",
-    "nas-api",
-    "usages-api",
-    MCP_API_ROUTE_ID,
-    NETWORK_API_ROUTE_ID,
-    NETWORK_WRITE_ROUTE_ID,
+# INTERNAL_PROXY_ROUTE_IDS (apisix_system_resources) are the routes provisioned
+# with _internal_proxy_headers() — the ones whose requests reach this app
+# through APISIX and are authenticated by that header.
+
+# The fixed routes whose replayed consumer-restriction whitelist provisioning
+# keeps (_preserve_consumer_restriction): every service route and the /api/llm
+# routes that take key grants. A new fixed route joins this set.
+_GRANTED_ROUTE_IDS = frozenset(
+    {*SERVICE_ROUTE_IDS, "llm-proxy", *llm_routes.CONVERTER_ROUTE_IDS, "llm-metrics"}
 )
-
-
-def _is_missing_route_error(exc: Exception) -> bool:
-    if isinstance(exc, HTTPStatusError):
-        return exc.response.status_code == 404
-
-    message = str(exc).lower()
-    return "404" in message or "not found" in message
 
 
 def _internal_proxy_secret() -> str:
@@ -125,16 +108,11 @@ async def _reconcile_internal_proxy_header() -> None:
         # only happens with validation patched out — nothing to reconcile toward.
         return
 
-    from app.services import apisix_client
-
     for route_id in INTERNAL_PROXY_ROUTE_IDS:
-        try:
-            route = await apisix_client.get_resource("routes", route_id)
-        except Exception as exc:
-            if _is_missing_route_error(exc):
-                # First boot: provisioning creates it carrying the current secret.
-                continue
-            raise
+        route = await apisix_client.get_resource_or_none("routes", route_id)
+        if route is None:
+            # First boot: provisioning creates it carrying the current secret.
+            continue
 
         plugins = route.get("plugins") or {}
         proxy_rewrite = plugins.get("proxy-rewrite") or {}
@@ -180,50 +158,27 @@ async def _run_internal_proxy_reconcile_loop(
     here brings the routes to its own value within one interval. A standby
     never writes. Failures are logged and retried on the next interval.
     """
-    while True:
-        await asyncio.sleep(interval_seconds)
-        try:
-            if await is_active_instance():
-                await _reconcile_internal_proxy_header()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Internal-proxy header reconcile failed (%s); retrying in %ss",
-                exc,
-                interval_seconds,
-            )
+    await run_periodic(
+        _reconcile_internal_proxy_header,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=interval_seconds,
+        on_failure=lambda exc: logger.warning(
+            "Internal-proxy header reconcile failed (%s); retrying in %ss",
+            exc,
+            interval_seconds,
+        ),
+    )
 
 
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {
-        "query-api",
-        QUERY_TEMPLATE_WRITE_ROUTE_ID,
-        "llm-proxy",
-        "s3-api",
-        "llm-messages",
-        "llm-responses",
-        "nas-api",
-        "usages-api",
-        MCP_API_ROUTE_ID,
-        NETWORK_API_ROUTE_ID,
-        NETWORK_WRITE_ROUTE_ID,
-        "prometheus-api",
-        "llm-metrics",
-        "llm-models",
-    }:
+    if route_id not in _GRANTED_ROUTE_IDS:
         return body
 
-    from app.services import apisix_client
-
-    try:
-        existing_route = await apisix_client.get_resource("routes", route_id)
-    except Exception as exc:
-        if _is_missing_route_error(exc):
-            return body
-        raise
+    existing_route = await apisix_client.get_resource_or_none("routes", route_id)
+    if existing_route is None:
+        return body
 
     existing_plugins = existing_route.get("plugins", {})
     consumer_restriction = existing_plugins.get("consumer-restriction")
@@ -252,18 +207,12 @@ async def _put_upstream_if_unclaimed(upstream_id: str, body: dict[str, object]) 
     unclaimed — any other admin-API failure propagates so the caller's retry
     loop sees it instead of mistaking an outage for an absent upstream.
     """
-    from app.services import apisix_client
-
-    desired = upstream_node_addresses(body.get("nodes"))
-    try:
-        existing = await apisix_client.get_resource("upstreams", upstream_id)
-    except Exception as exc:
-        if not _is_missing_route_error(exc):
-            raise
-    else:
+    desired = apisix_client.upstream_node_addresses(body.get("nodes"))
+    existing = await apisix_client.get_resource_or_none("upstreams", upstream_id)
+    if existing is not None:
         # An upstream with no usable node serves nothing, so it is a broken
         # leftover rather than a claim — repair it.
-        current = upstream_node_addresses(existing.get("nodes"))
+        current = apisix_client.upstream_node_addresses(existing.get("nodes"))
         if current and current != desired:
             logger.warning(
                 "APISIX upstream %s already points at %s, not %s — leaving it alone. "
@@ -285,8 +234,6 @@ async def _put_not_found_route(route_id: str, body: dict[str, object], prefix: s
     APISIX refusing it (a 4xx) is only logged: it explains a 404 and must not
     keep the service down. Anything else reaches the provisioning retry loop.
     """
-    from app.services import apisix_client
-
     try:
         await apisix_client.put_resource("routes", route_id, body)
     except HTTPStatusError as exc:
@@ -300,14 +247,61 @@ async def _put_not_found_route(route_id: str, body: dict[str, object], prefix: s
         )
 
 
+def _service_route(route: ServiceRoute) -> dict[str, object]:
+    """The body provisioning writes for one of the fixed service routes.
+
+    Key order is part of the contract: scripts/deploy-bluegreen.sh matches the
+    route JSON APISIX hands back, and tests/test_main.py pins these bodies.
+    """
+    body: dict[str, object] = {"name": route.id}
+    if route.desc is not None:
+        body["desc"] = route.desc
+    if len(route.paths) == 1:
+        body["uri"] = route.paths[0]
+    else:
+        body["uris"] = list(route.paths)
+    body["methods"] = list(route.methods)
+    if route.priority is not None:
+        body["priority"] = route.priority
+    body["upstream_id"] = route.upstream_id
+    if route.query_timeout:
+        body["timeout"] = {
+            "connect": getattr(settings, "APISIX_QUERY_ROUTE_CONNECT_TIMEOUT", 10),
+            "send": settings_manager.query_route_timeout,
+            "read": settings_manager.query_route_timeout,
+        }
+    plugins: dict[str, object] = {
+        "key-auth": {"hide_credentials": False} if route.forward_key else {},
+    }
+    if route.deny_all:
+        plugins["consumer-restriction"] = {"whitelist": [api_keys.DENY_ALL_CONSUMER]}
+    rewrite: dict[str, object] = {"regex_uri": list(route.rewrite)}
+    if route.raw_request_uri:
+        rewrite["use_real_request_uri_unsafe"] = True
+    if route.internal_proxy:
+        rewrite["headers"] = _internal_proxy_headers()
+    plugins["proxy-rewrite"] = rewrite
+    body["plugins"] = plugins
+    body["status"] = 1
+    return body
+
+
+async def _put_service_route(route: ServiceRoute) -> None:
+    await apisix_client.put_resource(
+        "routes",
+        route.id,
+        await _preserve_consumer_restriction(route.id, _service_route(route)),
+    )
+    if route.log:
+        logger.info(route.log)
+
+
 async def _provision_llm_routes() -> None:
     """Point the /api/llm routes at Bifrost (app/services/llm_routes.py).
 
     Without a usable BIFROST_TEST_VK every route is left as it is: injecting no
     key would turn each request into a 401.
     """
-    from app.services import apisix_client
-
     virtual_key = getattr(settings, "BIFROST_TEST_VK", "") or ""
     if not llm_routes.usable_virtual_key(virtual_key):
         logger.error(
@@ -358,107 +352,108 @@ async def _provision_llm_routes() -> None:
     logger.info("APISIX /api/llm routes provisioned on Bifrost")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan: startup and shutdown logic."""
-    # ── Startup ──────────────────────────────────────────────────────────
-    validate_settings()
-    logger.info("Initializing meta database...")
-    await init_db()
+async def _provision_system_routes() -> None:
+    """Write the fixed upstreams and routes (APISIX_PROVISION_ON_START)."""
+    await _put_upstream_if_unclaimed(
+        "unibridge-service",
+        {
+            "name": "unibridge-service",
+            "type": "roundrobin",
+            "nodes": {
+                getattr(
+                    settings,
+                    "APISIX_UNIBRIDGE_SERVICE_NODE",
+                    "unibridge-service:8000",
+                ): 1
+            },
+        },
+    )
+    for route in APP_SERVICE_ROUTES:
+        await _put_service_route(route)
 
-    logger.info("Loading saved database connections...")
-    async for db in get_db():
-        result = await db.execute(select(DBConnection))
-        connections = result.scalars().all()
-        await connection_manager.initialize(list(connections))
-        logger.info("Loaded %d database connection(s)", len(connections))
-        break
+    await apisix_client.put_resource(
+        "upstreams",
+        "prometheus",
+        {
+            "name": "prometheus",
+            "type": "roundrobin",
+            "scheme": "http",
+            "nodes": {
+                getattr(
+                    settings,
+                    "APISIX_PROMETHEUS_NODE",
+                    "prometheus:9090",
+                ): 1
+            },
+        },
+    )
+    await _put_service_route(PROMETHEUS_API_ROUTE)
 
-    logger.info("Loading saved S3 connections...")
-    async for db in get_db():
-        from app.models import S3Connection as S3Conn
-        result = await db.execute(select(S3Conn))
-        s3_connections = result.scalars().all()
-        await s3_manager.initialize(list(s3_connections))
-        logger.info("Loaded %d S3 connection(s)", len(s3_connections))
-        break
+    # ── /api/llm on Bifrost ──
+    await _provision_llm_routes()
 
-    logger.info("Loading saved NAS connections...")
-    async for db in get_db():
-        from app.models import NASConnection as NASConn
-        result = await db.execute(select(NASConn))
-        nas_connections = result.scalars().all()
-        await nas_manager.initialize(list(nas_connections))
-        logger.info("Loaded %d NAS connection(s)", len(nas_connections))
-        break
+    # ── The removed Bifrost side-by-side test (/api/llm-bi) ──
+    # Its routes are gone; this 404 points callers to /api/llm.
+    await _put_not_found_route(
+        LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route(), "/api/llm-bi"
+    )
 
-    logger.info("Reconciling monitored-server scrape targets...")
-    async for db in get_db():
-        from app.services import server_monitor
-        await server_monitor.sync_targets_from_db(db)
-        await server_monitor.sync_service_targets_from_db(db)
-        break
+    # ── External MCP servers' relay routes (mcp-ext-*) ──
+    # Before the restriction replay, which fills their whitelists from the
+    # stored key grants.
+    from app.services import mcp_remote
 
-    logger.info("Loading system settings...")
-    async for db in get_db():
-        await settings_manager.load_from_db(db)
-        rate_limiter.update_limits(
-            rate_limit=settings_manager.rate_limit_per_minute,
-            max_concurrent=settings_manager.max_concurrent_queries,
-        )
-        break
+    async with async_session() as db:
+        await mcp_remote.provision_all(db)
 
-    # Reconcile the prometheus global rule on EVERY boot, regardless of
-    # APISIX_PROVISION_ON_START: it is what makes APISIX collect HTTP metrics in
-    # the first place, and its plugin conf carries `prefer_name` (label series
-    # by route *name*, falling back to id). APISIX reads that flag only from the
-    # plugin conf — a `plugin_attr.prometheus` entry in config.yaml is silently
-    # ignored — so this PUT is the single place it is set. Unlike route
-    # provisioning it touches no routes/upstreams, making it safe on an
-    # inactive blue/green color (mirrors the restriction replay below).
-    import asyncio as _asyncio
-    from app.services import apisix_client
 
-    # APISIX's admin API returns 503 for a while after the container starts
-    # (it is still syncing config from etcd), and 400/502 transients can occur
-    # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
-    # `compose up` does not fail startup before APISIX is actually reachable.
-    _gr_max_retries = 10
-    for _gr_attempt in range(1, _gr_max_retries + 1):
+BOOT_RETRY_ATTEMPTS = 10
+
+
+async def _retry_at_boot(
+    what: str, operation: Callable[[], Awaitable[object]], *, give_up_note: str = ""
+) -> None:
+    """Run a boot step until it succeeds, up to BOOT_RETRY_ATTEMPTS times.
+
+    APISIX's admin API returns 503 for a while after the container starts (it
+    is still syncing config from etcd), and 400/502 transients can occur
+    mid-sync. The backoff (2, 4, 8, then 15s) gives it a window of ~100s, so a
+    cold ``compose up`` does not fail startup before APISIX is reachable. The
+    last failure propagates and fails startup.
+    """
+    for attempt in range(1, BOOT_RETRY_ATTEMPTS + 1):
         try:
-            await apisix_client.put_resource(
-                "global_rules",
-                "prometheus",
-                {
-                    "plugins": {"prometheus": {"prefer_name": True}},
-                },
-            )
-            break
+            await operation()
+            return
         except Exception as exc:
-            if _gr_attempt < _gr_max_retries:
-                _delay = min(2**_gr_attempt, 15)  # 2,4,8,15,15,… capped
-                logger.warning(
-                    "Prometheus global-rule PUT attempt %d/%d failed: %s — retrying in %ds",
-                    _gr_attempt,
-                    _gr_max_retries,
-                    exc,
-                    _delay,
-                )
-                await _asyncio.sleep(_delay)
-            else:
+            if attempt == BOOT_RETRY_ATTEMPTS:
                 logger.error(
-                    "Prometheus global-rule PUT failed after %d attempts: %s — "
-                    "failing startup until APISIX is reachable",
-                    _gr_max_retries,
+                    "%s failed after %d attempts: %s%s",
+                    what,
+                    BOOT_RETRY_ATTEMPTS,
                     exc,
+                    give_up_note,
                 )
                 raise
+            delay = min(2**attempt, 15)  # 2,4,8,15,15,… capped
+            logger.warning(
+                "%s attempt %d/%d failed: %s — retrying in %ds",
+                what,
+                attempt,
+                BOOT_RETRY_ATTEMPTS,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
 
-    # Per-node path prefixes (app/services/node_path_prefix.py) act only through
-    # the plugin's global rule, so reconcile it on every boot as well. Best
-    # effort, unlike the rule above: an APISIX that predates the plugin answers
-    # "unknown plugin", and that must not keep the service down — a save that
-    # sets a prefix reports it to the admin instead.
+
+async def _reconcile_node_path_prefix_rule() -> None:
+    """Reconcile the per-node path-prefix global rule (app/services/node_path_prefix.py).
+
+    Best effort: an APISIX that predates the plugin answers "unknown plugin",
+    and that must not keep the service down — a save that sets a prefix
+    reports it to the admin instead.
+    """
     from app.services import node_path_prefix
 
     try:
@@ -499,365 +494,133 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 reason,
             )
 
+
+async def _replay_route_restrictions() -> None:
+    async with async_session() as db:
+        await api_keys.sync_all_consumer_route_restrictions(db)
+        logger.info(
+            "Replayed stored API key route restrictions "
+            "(APISIX_PROVISION_ON_START=%s)",
+            getattr(settings, "APISIX_PROVISION_ON_START", True),
+        )
+
+
+async def _listed_ids(resource: str) -> set[str] | None:
+    """The ids APISIX lists for ``resource``, or None when the listing fails."""
+    try:
+        listing = await apisix_client.list_resources(resource)
+    except Exception as exc:
+        logger.warning("Stale-state purge: could not list %s (%s) — skipping", resource, exc)
+        return None
+    return {
+        str(item.get("id"))
+        for item in listing.get("items", [])
+        if item.get("id") is not None
+    }
+
+
+# The purge_stale_states keyword of each resource type kept in the meta DB, in
+# the order they are read: what still exists comes from the type's id column
+# in alerts.RESOURCE_ID_COLUMNS.
+_PURGE_KEYWORDS = (
+    ("db", "known_db_aliases"),
+    ("nas", "known_nas_aliases"),
+    ("s3", "known_s3_aliases"),
+    ("server", "known_host_names"),
+    ("service", "known_service_names"),
+)
+
+# Background tasks on app.state, stopped in this order at shutdown, with what
+# is logged once each has stopped. The alert checker is stopped last, apart.
+_BACKGROUND_TASKS = (
+    ("retention_task", "Log retention cleanup stopped"),
+    ("api_key_expiry_task", "API key expiry reconcile stopped"),
+    ("internal_proxy_task", None),
+    ("bifrost_session_task", "Bifrost session logout loop stopped"),
+    ("upload_relay_task", "Upload relay purge loop stopped"),
+    ("mcp_artifact_task", "MCP artifact purge loop stopped"),
+    ("meta_db_metrics_task", "Metadata database metrics monitor stopped"),
+)
+
+
+async def _stop_task(app: FastAPI, attr: str) -> bool:
+    """Cancel the task at ``app.state.<attr>`` and wait for it; False when there is none."""
+    task = getattr(app.state, attr, None)
+    if task is None:
+        return False
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    return True
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application lifespan: startup and shutdown logic."""
+    # ── Startup ──────────────────────────────────────────────────────────
+    validate_settings()
+    logger.info("Initializing meta database...")
+    await init_db()
+
+    for what, model, manager in (
+        ("database", DBConnection, connection_manager),
+        ("S3", S3Connection, s3_manager),
+        ("NAS", NASConnection, nas_manager),
+    ):
+        logger.info("Loading saved %s connections...", what)
+        async with async_session() as db:
+            result = await db.execute(select(model))
+            connections = result.scalars().all()
+            await manager.initialize(list(connections))
+            logger.info("Loaded %d %s connection(s)", len(connections), what)
+
+    logger.info("Reconciling monitored-server scrape targets...")
+    async with async_session() as db:
+        from app.services import server_monitor
+        await server_monitor.sync_targets_from_db(db)
+        await server_monitor.sync_service_targets_from_db(db)
+
+    logger.info("Loading system settings...")
+    async with async_session() as db:
+        await settings_manager.load_from_db(db)
+        rate_limiter.update_limits(
+            rate_limit=settings_manager.rate_limit_per_minute,
+            max_concurrent=settings_manager.max_concurrent_queries,
+        )
+
+    # Reconcile the prometheus global rule on EVERY boot, regardless of
+    # APISIX_PROVISION_ON_START: it is what makes APISIX collect HTTP metrics in
+    # the first place, and its plugin conf carries `prefer_name` (label series
+    # by route *name*, falling back to id). APISIX reads that flag only from the
+    # plugin conf — a `plugin_attr.prometheus` entry in config.yaml is silently
+    # ignored — so this PUT is the single place it is set. Unlike route
+    # provisioning it touches no routes/upstreams, making it safe on an
+    # inactive blue/green color (mirrors the restriction replay below).
+    await _retry_at_boot(
+        "Prometheus global-rule PUT",
+        lambda: apisix_client.put_resource(
+            "global_rules",
+            "prometheus",
+            {
+                "plugins": {"prometheus": {"prefer_name": True}},
+            },
+        ),
+        give_up_note=" — failing startup until APISIX is reachable",
+    )
+
+    # Per-node path prefixes act only through the plugin's global rule, so
+    # reconcile it on every boot as well (best effort, unlike the rule above).
+    await _reconcile_node_path_prefix_rule()
+
     if getattr(settings, "APISIX_PROVISION_ON_START", True):
         logger.info("Provisioning APISIX query route...")
-
-        # Same transient-503 story as the global-rule PUT above.
-        _max_retries = 10
-        for _attempt in range(1, _max_retries + 1):
-            try:
-                # Ensure upstream for unibridge-service exists
-                await _put_upstream_if_unclaimed(
-                    "unibridge-service",
-                    {
-                        "name": "unibridge-service",
-                        "type": "roundrobin",
-                        "nodes": {
-                            getattr(
-                                settings,
-                                "APISIX_UNIBRIDGE_SERVICE_NODE",
-                                "unibridge-service:8000",
-                            ): 1
-                        },
-                    },
-                )
-
-                # Ensure /api/query/* route exists with key-auth
-                await apisix_client.put_resource(
-                    "routes",
-                    "query-api",
-                    await _preserve_consumer_restriction(
-                        "query-api",
-                        {
-                            "name": "query-api",
-                            "uri": "/api/query/*",
-                            "methods": ["POST", "GET"],
-                            "upstream_id": "unibridge-service",
-                            # Without this, APISIX's default 60s read timeout cuts
-                            # long queries before the app's own timeout fires. The
-                            # app allows req.timeout up to 300s (schemas.py), so
-                            # keep the gateway read above that — the app then wins
-                            # the race and returns a clean 408 + audit log.
-                            # Seeded from APISIX_QUERY_ROUTE_TIMEOUT (env) but
-                            # runtime-overridable via the settings UI, which
-                            # live-patches this route. settings_manager was loaded
-                            # from the DB just above, so this reflects the latest.
-                            "timeout": {
-                                "connect": getattr(
-                                    settings, "APISIX_QUERY_ROUTE_CONNECT_TIMEOUT", 10
-                                ),
-                                "send": settings_manager.query_route_timeout,
-                                "read": settings_manager.query_route_timeout,
-                            },
-                            "plugins": {
-                                "key-auth": {},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/query(.*)", "/query$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX query route provisioned successfully")
-
-                # Editing is a separate key grant from query read/execute.
-                await apisix_client.put_resource(
-                    "routes",
-                    QUERY_TEMPLATE_WRITE_ROUTE_ID,
-                    await _preserve_consumer_restriction(
-                        QUERY_TEMPLATE_WRITE_ROUTE_ID,
-                        {
-                            "name": QUERY_TEMPLATE_WRITE_ROUTE_ID,
-                            "desc": "Create, edit, and delete query templates",
-                            "uri": "/api/query/templates/*",
-                            "methods": ["PUT", "PATCH", "DELETE"],
-                            "priority": 20,
-                            "upstream_id": "unibridge-service",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {
-                                    "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                },
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/query(.*)", "/query$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX query-template write route provisioned successfully")
-
-                # Ensure /api/s3/* route exists with key-auth
-                await apisix_client.put_resource(
-                    "routes",
-                    "s3-api",
-                    await _preserve_consumer_restriction(
-                        "s3-api",
-                        {
-                            "name": "s3-api",
-                            "uri": "/api/s3/*",
-                            "methods": ["GET"],
-                            "upstream_id": "unibridge-service",
-                            "plugins": {
-                                "key-auth": {},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/s3(.*)", "/s3$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX S3 route provisioned successfully")
-
-                # Ensure /api/nas/* route exists with key-auth. Ships inline
-                # deny-all (consumer-restriction whitelist = DENY_ALL_CONSUMER) so
-                # the route is never callable by an arbitrary key between this PUT
-                # and the consumer-restriction replay below; the replay
-                # (sync_all_consumer_route_restrictions) installs the real
-                # whitelist, and on later boots _preserve_consumer_restriction
-                # keeps it.
-                await apisix_client.put_resource(
-                    "routes",
-                    "nas-api",
-                    await _preserve_consumer_restriction(
-                        "nas-api",
-                        {
-                            "name": "nas-api",
-                            "uri": "/api/nas/*",
-                            "methods": ["GET", "POST"],
-                            "upstream_id": "unibridge-service",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/nas(.*)", "/nas$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX NAS route provisioned successfully")
-
-                # Ensure /api/usages route exists with key-auth. Self-scoped
-                # usage metrics (each consumer only ever sees its own traffic),
-                # but access still follows the per-key route-grant model: ships
-                # inline deny-all like nas-api so it is never callable by an
-                # arbitrary key between this PUT and the consumer-restriction
-                # replay below.
-                await apisix_client.put_resource(
-                    "routes",
-                    "usages-api",
-                    await _preserve_consumer_restriction(
-                        "usages-api",
-                        {
-                            "name": "usages-api",
-                            "uri": "/api/usages",
-                            "methods": ["GET"],
-                            "upstream_id": "unibridge-service",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/usages(.*)", "/usages$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX usages route provisioned successfully")
-
-                # Ensure /api/mcp exists with key-auth: the MCP server over the
-                # query/S3/NAS surfaces (app/routers/mcp.py). Inline deny-all
-                # like nas-api until the consumer-restriction replay; its tool
-                # calls wait on query-api, so the read timeout follows query-api's.
-                # /api/mcp/artifacts carries the bytes of staged artifacts
-                # (app/services/mcp_artifacts.py) on the same grant; the deploy
-                # script re-provisions while the route lacks those paths.
-                await apisix_client.put_resource(
-                    "routes",
-                    MCP_API_ROUTE_ID,
-                    await _preserve_consumer_restriction(
-                        MCP_API_ROUTE_ID,
-                        {
-                            "name": MCP_API_ROUTE_ID,
-                            "desc": "MCP server (Streamable HTTP): query templates, databases, S3, NAS",
-                            "uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"],
-                            "methods": ["GET", "POST", "DELETE"],
-                            "upstream_id": "unibridge-service",
-                            "timeout": {
-                                "connect": getattr(
-                                    settings, "APISIX_QUERY_ROUTE_CONNECT_TIMEOUT", 10
-                                ),
-                                "send": settings_manager.query_route_timeout,
-                                "read": settings_manager.query_route_timeout,
-                            },
-                            "plugins": {
-                                # The app resends the key with each tool call
-                                # (mcp_tools._gateway), so it must reach it.
-                                "key-auth": {"hide_credentials": False},
-                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/mcp(.*)", "/mcp$1"],
-                                    "headers": _internal_proxy_headers(),
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX MCP route provisioned successfully")
-
-                # Network map (app/routers/network.py): reads on network-api,
-                # writes on network-write-api, a separate grant like
-                # query-template-write-api. Same uri, split by method. Both ship
-                # inline deny-all like nas-api until the consumer-restriction
-                # replay below.
-                for network_route_id, methods, desc in (
-                    (
-                        NETWORK_API_ROUTE_ID,
-                        ["GET"],
-                        "Network map: regions, hosts, firewall openings, port usage, access checks",
-                    ),
-                    (
-                        NETWORK_WRITE_ROUTE_ID,
-                        ["POST", "PUT", "DELETE"],
-                        "Network map: record regions, hosts, firewall openings and port usage",
-                    ),
-                ):
-                    await apisix_client.put_resource(
-                        "routes",
-                        network_route_id,
-                        await _preserve_consumer_restriction(
-                            network_route_id,
-                            {
-                                "name": network_route_id,
-                                "desc": desc,
-                                "uri": "/api/network/*",
-                                "methods": methods,
-                                "upstream_id": "unibridge-service",
-                                "plugins": {
-                                    "key-auth": {},
-                                    "consumer-restriction": {
-                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                    },
-                                    "proxy-rewrite": {
-                                        "regex_uri": ["^/api/network(.*)", "/network$1"],
-                                        "use_real_request_uri_unsafe": True,
-                                        "headers": _internal_proxy_headers(),
-                                    },
-                                },
-                                "status": 1,
-                            },
-                        ),
-                    )
-                logger.info("APISIX network routes provisioned successfully")
-
-                # ── Prometheus query API ──
-                # External PromQL access rides the gateway instead of a raw host
-                # port: Prometheus has no auth of its own, so a published :9090
-                # is an open read of every metric. Behind key-auth the same
-                # surface is read-only — the container runs without
-                # --web.enable-admin-api / --web.enable-lifecycle, so there is
-                # nothing to write or reload through it. Ships inline deny-all
-                # like nas-api so the route is never callable by an arbitrary key
-                # between this PUT and the consumer-restriction replay below.
-                await apisix_client.put_resource(
-                    "upstreams",
-                    "prometheus",
-                    {
-                        "name": "prometheus",
-                        "type": "roundrobin",
-                        "scheme": "http",
-                        "nodes": {
-                            getattr(
-                                settings,
-                                "APISIX_PROMETHEUS_NODE",
-                                "prometheus:9090",
-                            ): 1
-                        },
-                    },
-                )
-                await apisix_client.put_resource(
-                    "routes",
-                    "prometheus-api",
-                    await _preserve_consumer_restriction(
-                        "prometheus-api",
-                        {
-                            "name": "prometheus-api",
-                            "desc": "Prometheus HTTP API (PromQL queries, read-only) via the gateway",
-                            "uri": "/api/prometheus/*",
-                            # POST carries form-encoded /api/v1/query bodies —
-                            # the only way to send a query too long for a URL.
-                            "methods": ["GET", "POST"],
-                            "upstream_id": "prometheus",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/prometheus(.*)", "$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                },
-                            },
-                            "status": 1,
-                        },
-                    ),
-                )
-                logger.info("APISIX Prometheus route provisioned successfully")
-
-                # ── /api/llm on Bifrost ──
-                await _provision_llm_routes()
-
-                # ── The removed Bifrost side-by-side test (/api/llm-bi) ──
-                # Its routes are gone; this 404 points callers to /api/llm.
-                await _put_not_found_route(
-                    LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route(), "/api/llm-bi"
-                )
-
-                # ── External MCP servers' relay routes (mcp-ext-*) ──
-                # Before the restriction replay below, which fills their
-                # whitelists from the stored key grants.
-                from app.services import mcp_remote
-
-                async for db in get_db():
-                    await mcp_remote.provision_all(db)
-                    break
-
-                break
-            except Exception as exc:
-                if _attempt < _max_retries:
-                    _delay = min(2**_attempt, 15)  # 2,4,8,15,15,… capped
-                    logger.warning(
-                        "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
-                        _attempt,
-                        _max_retries,
-                        exc,
-                        _delay,
-                    )
-                    await _asyncio.sleep(_delay)
-                else:
-                    logger.error(
-                        "APISIX provisioning failed after %d attempts: %s — "
-                        "failing startup until APISIX is reachable",
-                        _max_retries,
-                        exc,
-                    )
-                    raise
-
+        await _retry_at_boot(
+            "APISIX provisioning",
+            _provision_system_routes,
+            give_up_note=" — failing startup until APISIX is reachable",
+        )
     else:
         logger.info("Skipping APISIX route provisioning because APISIX_PROVISION_ON_START=false")
 
@@ -872,37 +635,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # already holds the new value. Retries like the global-rule PUT — the GET is
     # what tells a rotation apart from a no-op, so a reconcile that never
     # reached APISIX may be leaving auth broken.
-    _ip_max_retries = 10 if await is_active_instance() else 0
-    if not _ip_max_retries:
+    if await is_active_instance():
+        await _retry_at_boot(
+            "Internal-proxy header reconcile",
+            _reconcile_internal_proxy_header,
+            give_up_note=(
+                " — failing startup: a rotated APISIX_INTERNAL_PROXY_SECRET that "
+                "never reached APISIX 401s every gateway-proxied request"
+            ),
+        )
+    else:
         logger.info(
             "Standby color: leaving the internal-proxy header on the shared routes "
             "to the active color"
         )
-    for _ip_attempt in range(1, _ip_max_retries + 1):
-        try:
-            await _reconcile_internal_proxy_header()
-            break
-        except Exception as exc:
-            if _ip_attempt < _ip_max_retries:
-                _delay = min(2**_ip_attempt, 15)  # 2,4,8,15,15,… capped
-                logger.warning(
-                    "Internal-proxy header reconcile attempt %d/%d failed: %s — "
-                    "retrying in %ds",
-                    _ip_attempt,
-                    _ip_max_retries,
-                    exc,
-                    _delay,
-                )
-                await _asyncio.sleep(_delay)
-            else:
-                logger.error(
-                    "Internal-proxy header reconcile failed after %d attempts: %s — "
-                    "failing startup: a rotated APISIX_INTERNAL_PROXY_SECRET that "
-                    "never reached APISIX 401s every gateway-proxied request",
-                    _ip_max_retries,
-                    exc,
-                )
-                raise
 
     # Replay stored API-key consumer-restrictions on EVERY boot, regardless of
     # APISIX_PROVISION_ON_START. The database is the source of truth for
@@ -913,38 +659,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # color — or any color booting after an etcd reset — restore the real access
     # rules instead of leaving routes stuck at deny-all (or stale) until the next
     # first-boot-style provision.
-    import asyncio as _asyncio_replay
-
-    _replay_max_retries = 10
-    for _replay_attempt in range(1, _replay_max_retries + 1):
-        try:
-            async for db in get_db():
-                await api_keys.sync_all_consumer_route_restrictions(db)
-                logger.info(
-                    "Replayed stored API key route restrictions "
-                    "(APISIX_PROVISION_ON_START=%s)",
-                    getattr(settings, "APISIX_PROVISION_ON_START", True),
-                )
-                break
-            break
-        except Exception as exc:
-            if _replay_attempt < _replay_max_retries:
-                _delay = min(2**_replay_attempt, 15)  # 2,4,8,15,15,… capped
-                logger.warning(
-                    "API key restriction replay attempt %d/%d failed: %s — retrying in %ds",
-                    _replay_attempt,
-                    _replay_max_retries,
-                    exc,
-                    _delay,
-                )
-                await _asyncio_replay.sleep(_delay)
-            else:
-                logger.error(
-                    "API key restriction replay failed after %d attempts: %s",
-                    _replay_max_retries,
-                    exc,
-                )
-                raise
+    await _retry_at_boot("API key restriction replay", _replay_route_restrictions)
 
     from app.services.alert_state import (
         AlertStateManager,
@@ -955,59 +670,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.routers.alerts import set_alert_state
 
     alert_state = AlertStateManager()
-    async for db in get_db():
+    async with async_session() as db:
         await load_alert_state_from_db(db, alert_state)
 
         # Collect ground truth for stale-state purge. APISIX-derived
         # sets stay None when the API call fails, so a transient APISIX
         # outage does not wipe upstream/route alert state.
-        db_aliases_result = await db.execute(select(DBConnection.alias))
-        known_db_aliases = set(db_aliases_result.scalars().all())
-        nas_aliases_result = await db.execute(select(NASConnection.alias))
-        known_nas_aliases = set(nas_aliases_result.scalars().all())
-        s3_aliases_result = await db.execute(select(S3Connection.alias))
-        known_s3_aliases = set(s3_aliases_result.scalars().all())
-        host_names_result = await db.execute(select(MonitoredHost.name))
-        known_host_names = set(host_names_result.scalars().all())
-        service_names_result = await db.execute(select(MonitoredService.name))
-        known_service_names = set(service_names_result.scalars().all())
-
-        known_upstream_ids: set[str] | None
-        known_route_ids: set[str] | None
-        try:
-            from app.services import apisix_client as _apisix
-            upstream_data = await _apisix.list_resources("upstreams")
-            known_upstream_ids = {
-                str(item.get("id"))
-                for item in upstream_data.get("items", [])
-                if item.get("id") is not None
-            }
-        except Exception as exc:
-            logger.warning("Stale-state purge: could not list upstreams (%s) — skipping", exc)
-            known_upstream_ids = None
-        try:
-            route_data = await _apisix.list_resources("routes")
-            known_route_ids = {
-                str(item.get("id"))
-                for item in route_data.get("items", [])
-                if item.get("id") is not None
-            }
-        except Exception as exc:
-            logger.warning("Stale-state purge: could not list routes (%s) — skipping", exc)
-            known_route_ids = None
+        known: dict[str, set[str]] = {}
+        for resource_type, keyword in _PURGE_KEYWORDS:
+            rows = await db.execute(select(alerts.RESOURCE_ID_COLUMNS[resource_type]))
+            known[keyword] = set(rows.scalars().all())
 
         await purge_stale_states(
             db,
             alert_state,
-            known_db_aliases=known_db_aliases,
-            known_nas_aliases=known_nas_aliases,
-            known_s3_aliases=known_s3_aliases,
-            known_upstream_ids=known_upstream_ids,
-            known_route_ids=known_route_ids,
-            known_host_names=known_host_names,
-            known_service_names=known_service_names,
+            known_upstream_ids=await _listed_ids("upstreams"),
+            known_route_ids=await _listed_ids("routes"),
+            **known,
         )
-        break
     set_alert_state(alert_state)
     app.state.alert_task = await start_checker(alert_state)
     logger.info("Alert checker started")
@@ -1049,67 +729,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
-    if hasattr(app.state, "retention_task"):
-        app.state.retention_task.cancel()
-        try:
-            await app.state.retention_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Log retention cleanup stopped")
+    for attr, stopped in _BACKGROUND_TASKS:
+        if await _stop_task(app, attr) and stopped:
+            logger.info(stopped)
 
-    if hasattr(app.state, "api_key_expiry_task"):
-        app.state.api_key_expiry_task.cancel()
-        try:
-            await app.state.api_key_expiry_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("API key expiry reconcile stopped")
-
-    if hasattr(app.state, "internal_proxy_task"):
-        app.state.internal_proxy_task.cancel()
-        try:
-            await app.state.internal_proxy_task
-        except asyncio.CancelledError:
-            pass
-
-    if hasattr(app.state, "bifrost_session_task"):
-        app.state.bifrost_session_task.cancel()
-        try:
-            await app.state.bifrost_session_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Bifrost session logout loop stopped")
-
-    if hasattr(app.state, "upload_relay_task"):
-        app.state.upload_relay_task.cancel()
-        try:
-            await app.state.upload_relay_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Upload relay purge loop stopped")
-
-    if hasattr(app.state, "mcp_artifact_task"):
-        app.state.mcp_artifact_task.cancel()
-        try:
-            await app.state.mcp_artifact_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("MCP artifact purge loop stopped")
-
-    if hasattr(app.state, "meta_db_metrics_task"):
-        app.state.meta_db_metrics_task.cancel()
-        try:
-            await app.state.meta_db_metrics_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Metadata database metrics monitor stopped")
-
-    if hasattr(app.state, "alert_task"):
-        app.state.alert_task.cancel()
-        try:
-            await app.state.alert_task
-        except asyncio.CancelledError:
-            pass
+    if await _stop_task(app, "alert_task"):
         from app.services.alert_checker import stop_template_checks
         await stop_template_checks()
         logger.info("Alert checker stopped")
@@ -1126,6 +750,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services import mcp_tools, prometheus_client
     await prometheus_client.aclose()
     await mcp_tools.aclose()
+    await apisix_client.aclose()
 
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin

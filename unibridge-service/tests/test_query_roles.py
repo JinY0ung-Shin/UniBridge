@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.auth import ALL_PERMISSIONS
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
+from tests.helpers import create_api_key_via_admin, sessions
 
 
 # ============================================================================
@@ -133,7 +134,6 @@ class TestQueryExecute:
         has no active transaction at the moment the executor is invoked.
         """
         from httpx import ASGITransport, AsyncClient
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
         from app.auth import invalidate_permission_cache
         from app.database import get_db
@@ -141,9 +141,7 @@ class TestQueryExecute:
 
         # Grant the non-admin querier a per-DB SELECT grant so the router runs
         # its meta read path (select(Permission)) and reaches execution.
-        session_factory = async_sessionmaker(
-            seeded_db, class_=AsyncSession, expire_on_commit=False
-        )
+        session_factory = sessions(seeded_db)
         async with session_factory() as db:
             db.add(
                 Permission(
@@ -655,39 +653,7 @@ class TestQueryExecute:
     async def test_apikey_cannot_execute_mutating_neo4j_query(
         self, client, admin_token
     ):
-        with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-            mock_apisix.put_resource = AsyncMock(
-                return_value={
-                    "username": "graph-app",
-                    "plugins": {"key-auth": {"key": "graph-key"}},
-                }
-            )
-            mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-            mock_apisix.list_resources = AsyncMock(
-                return_value={
-                    "items": [
-                        {
-                            "id": "query-api",
-                            "uri": "/query/*",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {"whitelist": []},
-                            },
-                        }
-                    ]
-                }
-            )
-            resp = await client.post(
-                "/admin/api-keys",
-                json={
-                    "name": "graph-app",
-                    "api_key": "graph-key",
-                    "allowed_databases": ["graph"],
-                    "allowed_routes": ["query-api"],
-                },
-                headers=auth_header(admin_token),
-            )
-            assert resp.status_code == 201
+        await self._create_api_key(client, admin_token, name="graph-app", key="graph-key")
 
         with patch(
             "app.routers.query.connection_manager.get_db_type",
@@ -714,40 +680,18 @@ class TestQueryExecute:
         mock_exec.assert_not_awaited()
 
     async def _create_api_key(self, client, admin_token, *, name, key, **extra):
-        with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-            mock_apisix.put_resource = AsyncMock(
-                return_value={
-                    "username": name,
-                    "plugins": {"key-auth": {"key": key}},
-                }
-            )
-            mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
-            mock_apisix.list_resources = AsyncMock(
-                return_value={
-                    "items": [
-                        {
-                            "id": "query-api",
-                            "uri": "/query/*",
-                            "plugins": {
-                                "key-auth": {},
-                                "consumer-restriction": {"whitelist": []},
-                            },
-                        }
-                    ]
-                }
-            )
-            resp = await client.post(
-                "/admin/api-keys",
-                json={
-                    "name": name,
-                    "api_key": key,
-                    "allowed_databases": ["graph"],
-                    "allowed_routes": ["query-api"],
-                    **extra,
-                },
-                headers=auth_header(admin_token),
-            )
-            assert resp.status_code == 201
+        # The listing carries query-api, so the key's route restriction sync
+        # has a route to rewrite (the shared helper's listing is empty).
+        query_route = {
+            "id": "query-api",
+            "uri": "/query/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        }
+        await create_api_key_via_admin(
+            client, admin_token, name,
+            api_key=key, allowed_databases=["graph"], allowed_routes=["query-api"], **extra,
+            apisix={"list_resources": AsyncMock(return_value={"items": [query_route]})},
+        )
 
     async def test_apikey_with_insert_flag_can_create_but_not_delete(
         self, client, admin_token
@@ -1067,82 +1011,6 @@ class TestListDatabases:
 
 
 # ============================================================================
-# ROLES ROUTER -- Public endpoints
-# ============================================================================
-
-
-class TestAuthRolesPublic:
-    """Tests for GET /auth/roles (requires authentication)."""
-
-    async def test_list_auth_roles_returns_seeded_roles(self, client, admin_token):
-        resp = await client.get("/auth/roles", headers=auth_header(admin_token))
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
-        # Seeded roles are admin, user -- returned sorted by name
-        assert data == ["admin", "user"]
-
-
-# ============================================================================
-# ROLES ROUTER -- Current user info
-# ============================================================================
-
-
-class TestAuthMe:
-    """Tests for GET /auth/me."""
-
-    async def test_admin_me_returns_all_permissions(self, client, admin_token):
-        resp = await client.get("/auth/me", headers=auth_header(admin_token))
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["username"] == "testadmin"
-        assert data["role"] == "admin"
-        assert len(data["permissions"]) == len(ALL_PERMISSIONS)
-        assert set(data["permissions"]) == set(ALL_PERMISSIONS)
-
-    async def test_user_me_returns_limited_permissions(self, client, user_token):
-        resp = await client.get("/auth/me", headers=auth_header(user_token))
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["username"] == "testuser"
-        assert data["role"] == "user"
-        assert len(data["permissions"]) == 2
-        assert set(data["permissions"]) == {
-            "gateway.monitoring.self",
-            "apikeys.self",
-        }
-
-    async def test_me_without_token_returns_401(self, client):
-        """No Authorization header yields 401 from HTTPBearer."""
-        resp = await client.get("/auth/me")
-        assert resp.status_code == 401
-
-
-# ============================================================================
-# ROLES ROUTER -- Permission list
-# ============================================================================
-
-
-class TestAdminPermissions:
-    """Tests for GET /admin/permissions."""
-
-    async def test_admin_can_list_all_permissions(self, client, admin_token):
-        resp = await client.get(
-            "/admin/permissions", headers=auth_header(admin_token)
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == len(ALL_PERMISSIONS)
-        assert data == ALL_PERMISSIONS
-
-    async def test_user_cannot_list_permissions(self, client, user_token):
-        resp = await client.get(
-            "/admin/permissions", headers=auth_header(user_token)
-        )
-        assert resp.status_code == 403
-
-
-# ============================================================================
 # ROLES ROUTER -- Role CRUD
 # ============================================================================
 
@@ -1415,12 +1283,6 @@ class TestRolePermissionEnforcement:
         )
         assert resp.status_code == 403
 
-    async def test_user_cannot_list_permissions(self, client, user_token):
-        resp = await client.get(
-            "/admin/permissions", headers=auth_header(user_token)
-        )
-        assert resp.status_code == 403
-
 
 # ============================================================================
 # QUERY ROUTER -- unparsable T-SQL batches
@@ -1436,12 +1298,10 @@ class TestUnparsableBatches:
     async def test_api_key_without_delete_flag_is_refused(self, client, seeded_db):
         import json
 
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
         from app.models import ApiKeyAccess
 
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
+        async with sessions(seeded_db)() as db:
             db.add(
                 ApiKeyAccess(
                     consumer_name="reader",

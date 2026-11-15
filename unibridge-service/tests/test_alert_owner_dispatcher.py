@@ -5,7 +5,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AlertChannel,
@@ -14,6 +14,7 @@ from app.models import (
     ResourceOwner,
 )
 from app.services.alert_owner_dispatcher import dispatch_alert
+from tests.helpers import sessions
 
 
 PAYLOAD_TEMPLATE = '{"recipients":{{recipients_json}},"body":"{{message}}"}'
@@ -118,7 +119,7 @@ async def _history_rows(session_factory) -> list[AlertHistory]:
 
 
 async def test_dispatch_alert_sends_to_resource_assignees(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -152,7 +153,7 @@ async def test_dispatch_alert_sends_to_resource_assignees(engine):
 
 
 async def test_dispatch_alert_unions_assignees_with_admins_and_dedupes(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         # admins overlap with one assignee (case-insensitive) and add a new one.
@@ -187,7 +188,7 @@ async def test_dispatch_alert_unions_assignees_with_admins_and_dedupes(engine):
 
 
 async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(
@@ -220,7 +221,7 @@ async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
 
 
 async def test_dispatch_alert_skips_resource_when_alerts_disabled(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(
@@ -253,7 +254,7 @@ async def test_dispatch_alert_skips_resource_when_alerts_disabled(engine):
 
 
 async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(
@@ -293,7 +294,7 @@ async def test_dispatch_alert_adds_referenced_assignees_in_ref_order(engine):
     referencing routes as ``assignee_refs``; those addresses sit between the
     primary resource's assignees and the admins, deduped case-insensitively.
     """
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(
@@ -339,7 +340,7 @@ async def test_dispatch_alert_tolerates_broken_referenced_assignees(engine):
     can neither suppress the alert (``alerts_enabled=False``) nor fail it
     (unparseable emails), because the admins must still be told.
     """
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(
@@ -382,7 +383,7 @@ async def test_dispatch_alert_tolerates_broken_referenced_assignees(engine):
 
 
 async def test_dispatch_alert_records_dispatch_metric(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -413,7 +414,7 @@ async def test_dispatch_alert_records_dispatch_metric(engine):
 async def test_dispatch_alert_skips_when_no_assignees_or_admins(engine):
     """No recipients is a skip (success None / returns None), not a delivery
     failure — the caller must not retry it and it must not count as a failure."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -442,7 +443,7 @@ async def test_dispatch_alert_skips_when_no_assignees_or_admins(engine):
 async def test_dispatch_alert_skips_when_no_mail_channel(engine):
     """No configured channel is a skip (success None / returns None): an
     unconfigured deployment must not be treated as a dispatch failure."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         db.add(AlertSettings(id=1, admin_emails=json.dumps(["admin@example.com"])))
         await db.commit()
@@ -469,7 +470,7 @@ async def test_dispatch_alert_skips_when_no_mail_channel(engine):
 
 
 async def test_dispatch_alert_records_template_error(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = AlertChannel(
             name="mail",
@@ -507,7 +508,7 @@ async def test_dispatch_alert_skips_for_disabled_mail_channel(engine):
     """A disabled channel means alerts were intentionally switched off — a skip
     (success None), not a delivery failure that should retry or trip the
     meta-alert."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, enabled=False)
         db.add(AlertSettings(
@@ -538,7 +539,7 @@ async def test_dispatch_alert_skips_for_disabled_mail_channel(engine):
 
 
 async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     payload_template = (
         '{"recipients":{{recipients_json}},"to":"{{recipients}}",'
         '"status":"{{status}}","target":"{{target_name}}",'
@@ -590,7 +591,7 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
 
 async def test_dispatch_alert_labels_a_scheduled_report_as_such(engine):
     """A "report" must not borrow the recovery wording — it announces no incident."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(
             db, payload_template='{"recipients":{{recipients_json}},"status":"{{status}}"}'
@@ -617,7 +618,7 @@ async def test_dispatch_alert_labels_a_scheduled_report_as_such(engine):
 
 
 async def test_dispatch_alert_requires_recipient_item_template(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, recipient_item_template=None)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -642,7 +643,7 @@ async def test_dispatch_alert_requires_recipient_item_template(engine):
 
 
 async def test_dispatch_alert_records_invalid_assignee_email_json(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -668,7 +669,7 @@ async def test_dispatch_alert_records_invalid_assignee_email_json(engine):
 
 
 async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -705,7 +706,7 @@ async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
 
 async def test_dispatch_alert_return_value_is_tristate(engine):
     """The return mirrors AlertHistory.success: True sent, None skipped, False failed."""
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -740,7 +741,7 @@ async def test_dispatch_alert_return_value_is_tristate(engine):
 
 
 async def test_dispatch_alert_releases_read_session_before_webhook(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
@@ -769,7 +770,7 @@ async def test_dispatch_alert_releases_read_session_before_webhook(engine):
 
 
 async def test_dispatch_alert_does_not_raise_when_history_record_fails(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(engine)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
         db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))

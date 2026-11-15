@@ -1,7 +1,6 @@
 """External MCP servers relayed through /api/mcp (app/services/mcp_remote.py)."""
 from __future__ import annotations
 
-import copy
 import json
 from typing import Any
 from unittest.mock import patch
@@ -9,12 +8,19 @@ from unittest.mock import patch
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AdminAuditLog, ApiKeyAccess
 from app.services import apisix_client, mcp_remote
 from tests.conftest import auth_header
-from tests.test_mcp import _call, _create_api_key, _put_settings, _rpc, _tool_names
+from tests import helpers
+from tests.helpers import sessions
+from tests.mcp_helpers import (
+    create_mcp_key,
+    mcp_call,
+    mcp_rpc,
+    mcp_tool_names,
+    put_mcp_settings,
+)
 
 URL = "http://mcp.internal:8080/mcp"
 RID = "mcp-ext-docs"
@@ -143,31 +149,14 @@ class FakeMcp:
         )
 
 
-class FakeApisix:
-    """The admin API's routes/upstreams, and the data plane for relay routes."""
+class FakeApisix(helpers.FakeApisix):
+    """The admin API's routes/upstreams (tests.helpers.FakeApisix), and the
+    data plane for relay routes."""
 
     def __init__(self, mcp: FakeMcp) -> None:
+        super().__init__()
         self.mcp = mcp
-        self.store: dict[str, dict[str, dict[str, Any]]] = {"routes": {}, "upstreams": {}}
         self.counted: list[tuple[str, str]] = []
-
-    async def get_resource(self, resource: str, resource_id: str) -> dict[str, Any]:
-        item = self.store[resource].get(resource_id)
-        if item is None:
-            request = httpx.Request("GET", f"http://apisix:9180/{resource}/{resource_id}")
-            raise httpx.HTTPStatusError("missing", request=request, response=httpx.Response(404, request=request))
-        return copy.deepcopy(item)
-
-    async def put_resource(self, resource: str, resource_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        self.store[resource][resource_id] = {**copy.deepcopy(body), "id": resource_id}
-        return copy.deepcopy(self.store[resource][resource_id])
-
-    async def delete_resource(self, resource: str, resource_id: str) -> None:
-        await self.get_resource(resource, resource_id)
-        del self.store[resource][resource_id]
-
-    async def list_resources(self, resource: str) -> dict[str, Any]:
-        return {"items": [copy.deepcopy(item) for item in self.store[resource].values()]}
 
     def whitelist(self, rid: str) -> list[str]:
         return self.store["routes"][rid]["plugins"]["consumer-restriction"]["whitelist"]
@@ -276,7 +265,7 @@ async def _register(client, admin_token, *, approve: list[str] | None = None, **
 
 
 async def _key(seeded_db, net: Net, name: str = "agent", *, granted: bool = True) -> dict[str, str]:
-    headers = await _create_api_key(seeded_db, name, routes=["mcp-api", RID] if granted else ["mcp-api"])
+    headers = await create_mcp_key(seeded_db, name, routes=["mcp-api", RID] if granted else ["mcp-api"])
     if granted:  # what the API-key route sync does on the gateway
         net.apisix.whitelist(RID).append(name)
     return headers
@@ -335,8 +324,7 @@ async def test_a_failed_route_write_leaves_no_server_behind(client, admin_token,
 
 
 async def test_master_keys_get_a_new_route(client, admin_token, seeded_db, net):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         db.add(ApiKeyAccess(consumer_name="root", allowed_databases='["*"]', allowed_routes='["*"]'))
         await db.commit()
     await client.post("/admin/mcp/servers", json=_server_body(), headers=auth_header(admin_token))
@@ -425,8 +413,7 @@ async def test_update_keeps_masked_secrets_and_the_whitelist(client, admin_token
 async def test_audit_log_never_holds_the_upstream_secret(client, admin_token, seeded_db, net):
     await _register(client, admin_token, approve=["search"])
     await client.delete("/admin/mcp/servers/docs", headers=auth_header(admin_token))
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         rows = (
             await db.execute(select(AdminAuditLog).where(AdminAuditLog.resource_type.like("mcp_server%")))
         ).scalars().all()
@@ -511,8 +498,7 @@ async def test_delete_removes_the_route_and_every_grant(client, admin_token, see
     resp = await client.delete("/admin/mcp/servers/docs", headers=auth_header(admin_token))
     assert resp.status_code == 204
     assert net.apisix.store == {"routes": {}, "upstreams": {}}
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         access = (await db.execute(select(ApiKeyAccess))).scalar_one()
     assert json.loads(access.allowed_routes) == ["mcp-api"]
     assert (await client.delete("/admin/mcp/servers/docs", headers=auth_header(admin_token))).status_code == 404
@@ -522,7 +508,7 @@ async def test_boot_provisioning_restores_routes(client, admin_token, seeded_db,
     await _register(client, admin_token)
     net.apisix.whitelist(RID).append("agent")
     del net.apisix.store["upstreams"][RID]
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    session_factory = sessions(seeded_db)
     async with session_factory() as db:
         await mcp_remote.provision_all(db)
     assert set(net.apisix.store["upstreams"]) == {RID}
@@ -560,25 +546,25 @@ async def test_tools_list_offers_approved_tools_to_granted_keys(client, admin_to
     granted = await _key(seeded_db, net)
     plain = await _key(seeded_db, net, "plain", granted=False)
 
-    resp = await _rpc(client, granted, "tools/list")
+    resp = await mcp_rpc(client, granted, "tools/list")
     tools = {tool["name"]: tool for tool in resp.json()["result"]["tools"]}
     assert set(tools) == {"docs__search"}
     tool = tools["docs__search"]
     assert tool["title"] == "docs: search"
     assert tool["inputSchema"] == _tool("search")["inputSchema"]
     assert tool["annotations"]["readOnlyHint"] is True
-    assert await _tool_names(client, plain) == []
+    assert await mcp_tool_names(client, plain) == []
     # tools/list is served from the stored listing: nothing went out.
     assert net.apisix.counted == []
 
-    await _put_settings(client, admin_token, external=False)
-    assert await _tool_names(client, granted) == []
-    await _put_settings(client, admin_token, external=True)
+    await put_mcp_settings(client, admin_token, external=False)
+    assert await mcp_tool_names(client, granted) == []
+    await put_mcp_settings(client, admin_token, external=True)
     body = _server_body(enabled=False)
     del body["name"]
     body["headers"] = [{"name": "Authorization", "value": "***1234"}]
     await client.put("/admin/mcp/servers/docs", json=body, headers=auth_header(admin_token))
-    assert await _tool_names(client, granted) == []
+    assert await mcp_tool_names(client, granted) == []
 
 
 @pytest.mark.parametrize("sse", [False, True], ids=["json", "sse"])
@@ -591,7 +577,7 @@ async def test_tool_calls_go_through_the_relay_as_the_caller(client, admin_token
     mcp.server_request = sse
     mcp.methods.clear()
 
-    result = await _call(client, headers, "docs__search", {"q": "hello", "extra": [1, 2]})
+    result = await mcp_call(client, headers, "docs__search", {"q": "hello", "extra": [1, 2]})
     assert result["isError"] is False
     seen = json.loads(result["content"][0]["text"])
     assert seen == {
@@ -602,7 +588,7 @@ async def test_tool_calls_go_through_the_relay_as_the_caller(client, admin_token
         "apikey": None,
         "relay": None,
     }
-    await _call(client, headers, "docs__write", {"q": "x"})
+    await mcp_call(client, headers, "docs__write", {"q": "x"})
     # One session per key: initialize once, then a single request per call.
     assert mcp.methods == ["initialize", "notifications/initialized", "tools/call", "tools/call"]
     # The refusals below go back on the relay too, so they count.
@@ -624,10 +610,10 @@ async def test_an_ended_session_is_opened_again(
     mcp.expired_status = expired_status
     # An answer longer than what is read of it still counts as an ended session.
     mcp.error_padding = error_padding
-    await _call(client, headers, "docs__search", {"q": "1"})
+    await mcp_call(client, headers, "docs__search", {"q": "1"})
     mcp.sessions.clear()  # the server restarted
     mcp.methods.clear()
-    result = await _call(client, headers, "docs__search", {"q": "2"})
+    result = await mcp_call(client, headers, "docs__search", {"q": "2"})
     assert result["isError"] is False
     assert mcp.methods == ["tools/call", "initialize", "notifications/initialized", "tools/call"]
 
@@ -636,24 +622,24 @@ async def test_relay_refusals_and_server_errors_reach_the_model(client, admin_to
     await _register(client, admin_token, approve=["search", "write"])
     headers = await _key(seeded_db, net)
 
-    result = await _call(client, headers, "docs__write", {"q": "boom"})
+    result = await mcp_call(client, headers, "docs__write", {"q": "boom"})
     assert result["isError"] is True
     assert result["content"][0]["text"] == "docs: MCP error -32602: bad q"
 
     net.apisix.whitelist(RID).remove("agent")  # the grant was revoked at the gateway
     mcp_remote._sessions.clear()
-    result = await _call(client, headers, "docs__search", {"q": "x"})
+    result = await mcp_call(client, headers, "docs__search", {"q": "x"})
     assert result["isError"] is True
     assert "HTTP 403: The consumer_name is forbidden." in result["content"][0]["text"]
 
-    result = await _call(client, {**headers, "apikey": ""}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, "apikey": ""}, "docs__search", {"q": "x"})
     assert result["isError"] is True
 
 
 async def test_results_are_cut_to_max_result_bytes(client, admin_token, seeded_db, net):
     await _register(client, admin_token, approve=["search"])
     headers = await _key(seeded_db, net)
-    await _put_settings(client, admin_token, max_result_bytes=2048)
+    await put_mcp_settings(client, admin_token, max_result_bytes=2048)
     net.apisix.mcp.call_result = {
         "content": [
             {"type": "text", "text": "a" * 500},
@@ -663,7 +649,7 @@ async def test_results_are_cut_to_max_result_bytes(client, admin_token, seeded_d
         "structuredContent": {"big": "x" * 3000},
         "isError": False,
     }
-    result = await _call(client, headers, "docs__search", {"q": "x"})
+    result = await mcp_call(client, headers, "docs__search", {"q": "x"})
     texts = [item["text"] for item in result["content"]]
     assert texts[0] == "a" * 500
     assert texts[1].endswith("[truncated at max_result_bytes]")
@@ -675,11 +661,11 @@ async def test_results_are_cut_to_max_result_bytes(client, admin_token, seeded_d
 async def test_a_streamed_answer_is_capped(client, admin_token, seeded_db, net):
     await _register(client, admin_token, approve=["search"])
     headers = await _key(seeded_db, net)
-    await _put_settings(client, admin_token, max_result_bytes=1024)
+    await put_mcp_settings(client, admin_token, max_result_bytes=1024)
     mcp = net.apisix.mcp
     mcp.sse = True
     mcp.call_result = {"content": [{"type": "text", "text": "x" * 200_000}]}
-    result = await _call(client, headers, "docs__search", {"q": "x"})
+    result = await mcp_call(client, headers, "docs__search", {"q": "x"})
     assert result["isError"] is True
     assert "The answer is over" in result["content"][0]["text"]
 
@@ -748,7 +734,7 @@ async def test_end_user_tokens_go_out_in_the_configured_header(client, admin_tok
     assert route["plugins"]["proxy-rewrite"]["headers"]["set"] == {"X-Tenant": "t1"}
 
     headers = await _key(seeded_db, net)
-    result = await _call(client, {**headers, "X-MCP-Auth-docs": " alice-pat "}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, "X-MCP-Auth-docs": " alice-pat "}, "docs__search", {"q": "x"})
     assert result["isError"] is False
     seen = json.loads(result["content"][0]["text"])
     assert seen["authorization"] == "Bearer alice-pat"
@@ -768,7 +754,7 @@ async def test_end_user_tokens_go_out_in_the_configured_header(client, admin_tok
     assert resp.json()["user_token_header"] is None
     assert resp.json()["user_token_client_header"] is None
     assert resp.json()["user_token_refresh"] is None
-    result = await _call(client, {**headers, "X-MCP-Auth-docs": "alice-pat"}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, "X-MCP-Auth-docs": "alice-pat"}, "docs__search", {"q": "x"})
     assert json.loads(result["content"][0]["text"])["authorization"] == "Bearer shared-5678"
 
 
@@ -800,7 +786,7 @@ async def test_an_update_that_leaves_the_setting_out_keeps_it(client, admin_toke
     assert resp.json()["user_token_format"] == "{token}"
 
     headers = await _key(seeded_db, net)
-    result = await _call(client, headers, "docs__search", {"q": "x"})
+    result = await mcp_call(client, headers, "docs__search", {"q": "x"})
     assert result["isError"] is True  # still needs the end user's token
 
 
@@ -825,8 +811,7 @@ async def test_the_refresh_token_is_kept_masked_and_not_sent_elsewhere(client, a
     assert resp.status_code == 200, resp.text
     assert resp.json()["user_token_refresh"] is None
 
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
+    async with sessions(seeded_db)() as db:
         rows = (await db.execute(select(AdminAuditLog).where(AdminAuditLog.resource_type == "mcp_server"))).scalars().all()
     assert rows
     for row in rows:
@@ -841,7 +826,7 @@ async def test_each_end_user_gets_their_own_session(client, admin_token, seeded_
     mcp.methods.clear()
     mcp.requests.clear()
     for token in ("alice-pat", "alice-pat", "bob-pat"):
-        result = await _call(client, {**headers, "X-MCP-Auth-docs": token}, "docs__search", {"q": "x"})
+        result = await mcp_call(client, {**headers, "X-MCP-Auth-docs": token}, "docs__search", {"q": "x"})
         assert result["isError"] is False
     assert mcp.methods == [
         "initialize", "notifications/initialized", "tools/call",
@@ -870,7 +855,7 @@ async def test_each_end_user_gets_their_own_session(client, admin_token, seeded_
 async def test_a_missing_or_unusable_token_never_leaves(client, admin_token, seeded_db, net, extra, message):
     await _register_user_token_server(client, admin_token)
     headers = await _key(seeded_db, net)
-    result = await _call(client, {**headers, **extra}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, **extra}, "docs__search", {"q": "x"})
     assert result["isError"] is True
     assert message in result["content"][0]["text"]
     assert net.apisix.counted == []
@@ -895,7 +880,7 @@ async def test_a_refused_end_user_token_is_named_in_the_error(client, admin_toke
     await _register_user_token_server(client, admin_token)
     headers = await _key(seeded_db, net)
     net.apisix.mcp.refused_authorizations.add("Bearer revoked-pat")
-    result = await _call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
     assert result["isError"] is True
     text = result["content"][0]["text"]
     assert "HTTP 401: Bad credentials" in text
@@ -908,7 +893,7 @@ async def test_a_long_refusal_keeps_its_status(client, admin_token, seeded_db, n
     headers = await _key(seeded_db, net)
     net.apisix.mcp.refused_authorizations.add("Bearer revoked-pat")
     net.apisix.mcp.error_padding = 10_000
-    result = await _call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
+    result = await mcp_call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
     assert result["isError"] is True
     text = result["content"][0]["text"]
     assert "HTTP 401:" in text

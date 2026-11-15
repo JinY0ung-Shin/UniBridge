@@ -32,20 +32,21 @@ import logging
 import os
 import re
 import unicodedata
-import weakref
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete as sa_delete, select, text
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db_types import utcnow
+# iso_utc is also used as relay.iso_utc by routers/upload_relay.py.
+from app.db_types import iso_utc, utcnow
 from app.models import UploadRelayFile
-from app.services.active_color import is_active_instance
+from app.services.active_color import run_periodic
 from app.services.audit import log_admin_action
+from app.services.meta_store import advisory_section, section_lock
 
 logger = logging.getLogger(__name__)
 
@@ -322,27 +323,17 @@ def file_snapshot(row: Any) -> dict[str, object]:
     return snapshot
 
 
-def iso_utc(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 # ── Limits ──────────────────────────────────────────────────────────────────
 
 # pg_advisory_xact_lock key of the store-a-file critical section ("uprelay1").
 _STORE_LOCK_KEY = 0x75_70_72_65_6C_61_79_31
-# One lock per event loop: the service has a single loop, but an asyncio.Lock
-# belongs to the loop that first waits on it (each test runs its own).
-_store_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
 
 
 def store_lock() -> asyncio.Lock:
-    return _store_locks.setdefault(asyncio.get_running_loop(), asyncio.Lock())
+    return section_lock(_STORE_LOCK_KEY)
 
 
-@asynccontextmanager
-async def storing(db: AsyncSession):
+def storing(db: AsyncSession) -> AbstractAsyncContextManager[None]:
     """One upload at a time between "is there room?" and the INSERT.
 
     The limits (files held per ticket, bytes waiting per Noah user and in
@@ -354,10 +345,7 @@ async def storing(db: AsyncSession):
     end in a commit or a rollback; the caller does that. SQLite, the legacy
     single-process store, has only the in-process lock.
     """
-    async with store_lock():
-        if db.get_bind().dialect.name == "postgresql":
-            await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STORE_LOCK_KEY})
-        yield
+    return advisory_section(db, _STORE_LOCK_KEY)
 
 
 # ── Expiry ──────────────────────────────────────────────────────────────────
@@ -442,11 +430,9 @@ async def run_purge_loop(
     the next pass picks the file up.
     """
     logger.info("Upload relay purge loop started")
-    await asyncio.sleep(first_delay_seconds)
-    while True:
-        try:
-            if await is_active_instance():
-                await run_purge_once()
-        except Exception:
-            logger.exception("Upload relay purge pass failed")
-        await asyncio.sleep(interval_seconds)
+    await run_periodic(
+        run_purge_once,
+        interval_seconds=interval_seconds,
+        first_delay_seconds=first_delay_seconds,
+        on_failure=lambda _exc: logger.exception("Upload relay purge pass failed"),
+    )

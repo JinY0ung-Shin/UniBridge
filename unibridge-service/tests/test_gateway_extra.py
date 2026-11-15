@@ -10,20 +10,12 @@ from app.routers.api_keys import DENY_ALL_CONSUMER
 from app.routers.gateway import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
-    _extract_scalar,
-    _extract_service_keys,
     _extract_strip_prefix,
-    _extract_timeseries,
     _validate_route,
 )
 from app.services.audit import mask_secret
 from tests.conftest import auth_header
-
-
-def _http_status(code: int, body: str = "boom") -> httpx.HTTPStatusError:
-    req = httpx.Request("GET", "http://apisix")
-    res = httpx.Response(code, request=req, text=body)
-    return httpx.HTTPStatusError("err", request=req, response=res)
+from tests.helpers import http_status_error
 
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
@@ -35,32 +27,6 @@ def test_mask_secret_short_long_and_non_string():
     assert mask_secret("abcd") == "***"
     assert mask_secret("supersecretkey") == "***tkey"
     assert mask_secret(12345) == "***"
-
-
-def test_extract_service_keys_present_and_absent():
-    assert _extract_service_keys({}) == []
-    assert (
-        _extract_service_keys({"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}})
-        == []
-    )
-    out = _extract_service_keys({
-        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-Token": "longvalue123"}}}}
-    })
-    assert out == [{"header_name": "X-Token", "header_value": "***e123"}]
-
-    multi = _extract_service_keys({
-        "plugins": {
-            "proxy-rewrite": {
-                "headers": {
-                    "set": {
-                        "X-Token": "longvalue123",
-                        "Authorization": "Bearer abcdef",
-                    }
-                }
-            }
-        }
-    })
-    assert {entry["header_name"] for entry in multi} == {"X-Token", "Authorization"}
 
 
 def test_extract_strip_prefix_true_when_regex_uri():
@@ -87,23 +53,6 @@ def test_validate_route_accepts_safe_and_rejects_unsafe():
     assert exc.value.status_code == 400
 
 
-def test_extract_scalar_handles_empty_and_invalid():
-    assert _extract_scalar([]) == 0.0
-    assert _extract_scalar([{"value": [0, "12.5"]}]) == 12.5
-    assert _extract_scalar([{"value": [0, "not-a-num"]}]) == 0.0
-    assert _extract_scalar([{}]) == 0.0
-
-
-def test_extract_timeseries_normalizes():
-    raw = [{"values": [[1.0, "5"], [2.0, "bad"], [3.0, "7"]]}]
-    assert _extract_timeseries(raw) == [
-        {"timestamp": 1.0, "value": 5.0},
-        {"timestamp": 2.0, "value": 0.0},
-        {"timestamp": 3.0, "value": 7.0},
-    ]
-    assert _extract_timeseries([]) == []
-
-
 # ── Routes endpoints ────────────────────────────────────────────────────────
 
 
@@ -127,21 +76,14 @@ async def test_list_routes_marks_system_routes(client, admin_token):
 
 async def test_list_routes_apisix_http_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.list_resources = AsyncMock(side_effect=_http_status(500, "x"))
-        resp = await client.get("/admin/gateway/routes", headers=auth_header(admin_token))
-    assert resp.status_code == 502
-
-
-async def test_list_routes_generic_error(client, admin_token):
-    with patch("app.routers.gateway.apisix_client") as mock:
-        mock.list_resources = AsyncMock(side_effect=RuntimeError("nope"))
+        mock.list_resources = AsyncMock(side_effect=http_status_error(500, "x"))
         resp = await client.get("/admin/gateway/routes", headers=auth_header(admin_token))
     assert resp.status_code == 502
 
 
 async def test_get_route_404(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "not found"))
+        mock.get_resource = AsyncMock(side_effect=http_status_error(404, "not found"))
         resp = await client.get("/admin/gateway/routes/missing", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
@@ -151,15 +93,6 @@ async def test_get_route_generic_error(client, admin_token):
         mock.get_resource = AsyncMock(side_effect=RuntimeError("ouch"))
         resp = await client.get("/admin/gateway/routes/x", headers=auth_header(admin_token))
     assert resp.status_code == 502
-
-
-async def test_save_route_inline_upstream_rejected(client, admin_token):
-    resp = await client.put(
-        "/admin/gateway/routes/r1",
-        json={"upstream": {"nodes": {"x": 1}}, "uri": "/api/x"},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 400
 
 
 async def test_save_route_uri_prefix_required(client, admin_token):
@@ -186,7 +119,7 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     body = {"name": "x-route", "uri": "/api/x", "upstream_id": "u1"}
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(return_value={"items": []})
-        mock.put_resource = AsyncMock(side_effect=_http_status(500, "boom"))
+        mock.put_resource = AsyncMock(side_effect=http_status_error(500, "boom"))
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json=body,
@@ -203,28 +136,6 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
             headers=auth_header(admin_token),
         )
     assert resp.status_code == 502
-
-
-async def test_save_route_success(client, admin_token):
-    body = {"name": "x-route", "uri": "/api/x", "upstream_id": "u1"}
-    with patch("app.routers.gateway.apisix_client") as mock:
-        mock.list_resources = AsyncMock(
-            return_value={"items": [{"id": "r1", "plugins": {"prometheus": {}}}]}
-        )
-        mock.put_resource = AsyncMock(return_value={
-            "uri": "/api/x", "upstream_id": "u1", "plugins": {},
-        })
-        resp = await client.put(
-            "/admin/gateway/routes/r1",
-            json=body,
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "service_keys" in data
-    assert isinstance(data["service_keys"], list)
-    assert "require_auth" in data
-    assert "strip_prefix" in data
 
 
 async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, admin_token):
@@ -299,11 +210,12 @@ async def test_delete_route_protected_blocks(client, admin_token):
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 400
+        assert resp.json()["detail"] == "System-managed route cannot be deleted"
 
 
 async def test_delete_route_apisix_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.delete_resource = AsyncMock(side_effect=_http_status(404, "gone"))
+        mock.delete_resource = AsyncMock(side_effect=http_status_error(404, "gone"))
         resp = await client.delete("/admin/gateway/routes/foo", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
@@ -326,7 +238,7 @@ async def test_route_test_no_upstream(client, admin_token):
 
 async def test_route_test_apisix_404(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
+        mock.get_resource = AsyncMock(side_effect=http_status_error(404, "no"))
         resp = await client.post("/admin/gateway/routes/r1/test", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
@@ -488,7 +400,7 @@ async def test_route_curl_default_get_no_keyauth(client, admin_token):
 
 async def test_route_curl_apisix_404_and_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
+        mock.get_resource = AsyncMock(side_effect=http_status_error(404, "no"))
         resp = await client.get("/admin/gateway/routes/x/curl", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
@@ -505,9 +417,11 @@ async def test_list_upstreams_marks_system(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(return_value={
             "items": [{"id": "unibridge-service"}, {"id": "custom-up"}],
+            "total": 2,
         })
         resp = await client.get("/admin/gateway/upstreams", headers=auth_header(admin_token))
     assert resp.status_code == 200
+    assert resp.json()["total"] == 2
     items = {i["id"]: i["system"] for i in resp.json()["items"]}
     assert items["unibridge-service"] is True
     assert items["custom-up"] is False
@@ -515,7 +429,7 @@ async def test_list_upstreams_marks_system(client, admin_token):
 
 async def test_list_upstreams_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.list_resources = AsyncMock(side_effect=_http_status(500))
+        mock.list_resources = AsyncMock(side_effect=http_status_error(500, "boom"))
         resp = await client.get("/admin/gateway/upstreams", headers=auth_header(admin_token))
     assert resp.status_code == 502
 
@@ -534,9 +448,10 @@ async def test_save_upstream_paths(client, admin_token):
             headers=auth_header(admin_token),
         )
     assert resp.status_code == 200
+    assert resp.json() == {"id": "u1"}
 
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.put_resource = AsyncMock(side_effect=_http_status(500))
+        mock.put_resource = AsyncMock(side_effect=http_status_error(500, "boom"))
         resp = await client.put(
             "/admin/gateway/upstreams/u1",
             json={"type": "roundrobin"},
@@ -568,9 +483,10 @@ async def test_delete_upstream_paths(client, admin_token):
         mock.delete_resource = AsyncMock()
         resp = await client.delete("/admin/gateway/upstreams/u1", headers=auth_header(admin_token))
     assert resp.status_code == 204
+    assert resp.content == b""
 
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.delete_resource = AsyncMock(side_effect=_http_status(404))
+        mock.delete_resource = AsyncMock(side_effect=http_status_error(404, "boom"))
         resp = await client.delete("/admin/gateway/upstreams/u1", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
@@ -635,28 +551,6 @@ async def test_metrics_latency_prometheus_error(client, admin_token):
                side_effect=RuntimeError("p")):
         resp = await client.get(
             "/admin/gateway/metrics/latency?range=1h",
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 502
-
-
-async def test_metrics_requests_total(client, admin_token):
-    points = [{"values": [[1.0, "5"]]}]
-    with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
-               return_value=points):
-        resp = await client.get(
-            "/admin/gateway/metrics/requests-total?range=1h",
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 200
-    assert resp.json() == [{"timestamp": 1.0, "value": 5.0}]
-
-
-async def test_metrics_requests_total_prom_error(client, admin_token):
-    with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
-               side_effect=RuntimeError("p")):
-        resp = await client.get(
-            "/admin/gateway/metrics/requests-total?range=1h",
             headers=auth_header(admin_token),
         )
     assert resp.status_code == 502

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 from contextlib import contextmanager
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
@@ -18,7 +19,6 @@ import httpx
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import false, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
 from app.db_types import utcnow
@@ -26,17 +26,17 @@ from app.models import McpArtifact
 from app.schemas import McpSettings
 from app.services import mcp_artifacts, mcp_tools
 from tests.conftest import auth_header
-from tests.test_mcp import (  # noqa: F401 - the gateway fixture is used by name
+from tests.helpers import sessions
+from tests.mcp_helpers import (
     EXT_KEY_ROUTES,
-    _call,
-    _create_api_key,
-    _expose,
-    _put_settings,
-    _routes,
-    _rpc,
-    _text,
-    _tool_names,
-    gateway,
+    create_mcp_key,
+    expose_routes,
+    ext_route_listing,
+    mcp_call,
+    mcp_rpc,
+    mcp_text,
+    mcp_tool_names,
+    put_mcp_settings,
 )
 
 MIB = 1024 * 1024
@@ -51,7 +51,7 @@ def _sha(data: bytes) -> str:
 
 def _payload(result: dict) -> dict:
     assert result["isError"] is False, result
-    return json.loads(_text(result))
+    return json.loads(mcp_text(result))
 
 
 @contextmanager
@@ -94,8 +94,7 @@ def _nas_file(body: bytes, filename: str = "scan.bin", content_type: str = "appl
 
 
 async def _rows(seeded_db) -> list[McpArtifact]:
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         return list((await db.execute(select(McpArtifact).order_by(McpArtifact.created_at))).scalars())
 
 
@@ -134,9 +133,9 @@ async def _multipart(request: httpx.Request):
 
 
 async def test_artifact_tools_follow_their_sources(client, seeded_db, admin_token, gateway):
-    s3_only = await _create_api_key(seeded_db, "s3-only", routes=["mcp-api", "s3-api"])
-    plain = await _create_api_key(seeded_db, "plain", routes=["mcp-api", "query-api"])
-    apis = await _create_api_key(seeded_db, "apis", routes=["mcp-api", "orders"])
+    s3_only = await create_mcp_key(seeded_db, "s3-only", routes=["mcp-api", "s3-api"])
+    plain = await create_mcp_key(seeded_db, "plain", routes=["mcp-api", "query-api"])
+    apis = await create_mcp_key(seeded_db, "apis", routes=["mcp-api", "orders"])
 
     async def download_tool(headers) -> dict | None:
         resp = await client.post(
@@ -145,26 +144,26 @@ async def test_artifact_tools_follow_their_sources(client, seeded_db, admin_toke
         tools = {tool["name"]: tool for tool in resp.json()["result"]["tools"]}
         return tools.get("download_artifact")
 
-    with _routes():
+    with ext_route_listing():
         # No source, no tool; and the upload needs a destination API.
         assert await download_tool(plain) is None
         tool = await download_tool(s3_only)
         assert tool["inputSchema"]["properties"]["source"]["enum"] == ["s3"]
         assert "api" not in tool["inputSchema"]["properties"]
-        assert "upload_staged_artifacts" not in await _tool_names(client, s3_only)
+        assert "upload_staged_artifacts" not in await mcp_tool_names(client, s3_only)
 
-        await _expose(client, admin_token, "orders")
+        await expose_routes(client, admin_token, "orders")
         tool = await download_tool(apis)
         assert tool["inputSchema"]["properties"]["source"]["enum"] == ["api"]
         assert tool["annotations"]["readOnlyHint"] is True
-        assert "upload_staged_artifacts" in await _tool_names(client, apis)
+        assert "upload_staged_artifacts" in await mcp_tool_names(client, apis)
 
         # The source's own group switches it off...
-        await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], s3=False)
+        await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], s3=False)
         assert await download_tool(s3_only) is None
         # ...and the artifacts group switches both tools off.
-        await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifacts=False)
-        names = await _tool_names(client, apis)
+        await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifacts=False)
+        names = await mcp_tool_names(client, apis)
         assert "download_artifact" not in names and "upload_staged_artifacts" not in names
         assert "call_api" in names
 
@@ -173,9 +172,9 @@ async def test_artifact_tools_follow_their_sources(client, seeded_db, admin_toke
 
 
 async def test_s3_download_stages_the_exact_bytes(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["store"])
+    headers = await create_mcp_key(seeded_db, databases=["store"])
     with _s3_file(BINARY) as get_object:
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -193,7 +192,7 @@ async def test_s3_download_stages_the_exact_bytes(client, seeded_db, gateway):
     # Read with the REST request a direct caller would send, counted on s3-api.
     assert gateway.calls == [("s3-api", "GET", "/api/s3/store/objects/download")]
     # The tool result is a reference: a few hundred bytes, none of the file's.
-    assert len(result["content"]) == 1 and len(_text(result)) < 600
+    assert len(result["content"]) == 1 and len(mcp_text(result)) < 600
 
     resp = await client.get(f"{ARTIFACTS}/{artifact['artifact_id']}", headers=headers)
     assert resp.status_code == 200
@@ -207,17 +206,17 @@ async def test_s3_download_stages_the_exact_bytes(client, seeded_db, gateway):
 
 
 async def test_nas_download_and_the_cache_policy(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
     args = {"source": "nas", "connection": "share", "path": "lab/scan.bin"}
     with _nas_file(BINARY) as open_stream:
-        first = _payload(await _call(client, headers, "download_artifact", args))
+        first = _payload(await mcp_call(client, headers, "download_artifact", args))
         open_stream.assert_awaited_once_with("share", "lab/scan.bin", length=None)
         assert first["filename"] == "scan.bin" and first["sha256"] == _sha(BINARY)
 
         # The same content again is the same artifact: read afresh (the route
         # authorizes every call), stored once, its lifetime started over.
         await _backdate(seeded_db, first["artifact_id"], seconds=300)
-        again = _payload(await _call(client, headers, "download_artifact", args))
+        again = _payload(await mcp_call(client, headers, "download_artifact", args))
         assert again["artifact_id"] == first["artifact_id"] and again["cached"] is True
         assert again["expires_at"] == first["expires_at"] or again["expires_at"] > first["expires_at"]
         assert open_stream.await_count == 2
@@ -226,15 +225,14 @@ async def test_nas_download_and_the_cache_policy(client, seeded_db, gateway):
 
     # Changed content under the same name is another artifact.
     with _nas_file(BINARY + b"!"):
-        changed = _payload(await _call(client, headers, "download_artifact", args))
+        changed = _payload(await mcp_call(client, headers, "download_artifact", args))
     assert changed["artifact_id"] != first["artifact_id"] and changed["cached"] is False
     assert len(await _rows(seeded_db)) == 2
 
 
 async def _backdate(seeded_db, artifact_id: str, *, seconds: int) -> None:
     """Move an artifact's expiry ``seconds`` earlier."""
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    async with sessions(seeded_db)() as db:
         row = await db.get(McpArtifact, artifact_id)
         await db.execute(
             update(McpArtifact)
@@ -245,10 +243,10 @@ async def _backdate(seeded_db, artifact_id: str, *, seconds: int) -> None:
 
 
 async def test_api_download_stages_a_binary_answer(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", "status")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", "status")
     args = {"source": "api", "api": "orders", "path": "/api/ext/orders/7/label", "query": {"dpi": 300}}
-    with _routes():
+    with ext_route_listing():
         gateway.reply = httpx.Response(
             200,
             content=BINARY,
@@ -257,7 +255,7 @@ async def test_api_download_stages_a_binary_answer(client, seeded_db, admin_toke
                 "content-disposition": "attachment; filename=\"x.pdf\"; filename*=UTF-8''%EB%9D%BC%EB%B2%A8.pdf",
             },
         )
-        artifact = _payload(await _call(client, headers, "download_artifact", args))
+        artifact = _payload(await mcp_call(client, headers, "download_artifact", args))
         assert artifact["mime"] == "application/pdf" and artifact["filename"] == "라벨.pdf"
         sent = gateway.external[-1]
         assert sent.method == "GET" and sent.url.params["dpi"] == "300"
@@ -267,7 +265,7 @@ async def test_api_download_stages_a_binary_answer(client, seeded_db, admin_toke
         # Without a name of its own the file takes the path's last segment; an
         # open route never sees the key.
         gateway.reply = httpx.Response(200, content=b"\x00\x01", headers={"content-type": "nonsense"})
-        artifact = _payload(await _call(client, headers, "download_artifact", {"source": "api", "api": "status"}))
+        artifact = _payload(await mcp_call(client, headers, "download_artifact", {"source": "api", "api": "status"}))
         assert artifact["filename"] == "status" and artifact["mime"] == "application/octet-stream"
         assert "apikey" not in gateway.external[-1].headers
 
@@ -295,12 +293,12 @@ async def test_api_download_stages_a_binary_answer(client, seeded_db, admin_toke
 async def test_download_refuses_what_it_must_not_read(
     client, seeded_db, admin_token, gateway, arguments, message
 ):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store", "share"])
-    await _expose(client, admin_token, "orders")
-    with _routes():
-        result = await _call(client, headers, "download_artifact", arguments)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store", "share"])
+    await expose_routes(client, admin_token, "orders")
+    with ext_route_listing():
+        result = await mcp_call(client, headers, "download_artifact", arguments)
     assert result["isError"] is True
-    assert message in _text(result)
+    assert message in mcp_text(result)
     assert gateway.calls == []
     assert await _rows(seeded_db) == []
 
@@ -309,17 +307,17 @@ async def test_nas_traversal_is_refused_by_the_share_root(client, seeded_db, gat
     """Paths are resolved by the NAS route itself; its refusal stages nothing."""
     from app.services.nas_security import NasSecurityError
 
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
     with patch("app.routers.nas.nas_manager.has_connection", return_value=True), patch(
         "app.routers.nas.nas_manager.open_read_stream",
         new_callable=AsyncMock,
         side_effect=NasSecurityError("path escapes the share"),
     ):
-        result = await _call(
+        result = await mcp_call(
             client, headers, "download_artifact", {"source": "nas", "connection": "share", "path": "../../etc/passwd"}
         )
     assert result["isError"] is True
-    assert _text(result).startswith("400: ")
+    assert mcp_text(result).startswith("400: ")
     assert await _rows(seeded_db) == []
 
 
@@ -332,17 +330,17 @@ class _Broken(httpx.AsyncByteStream):
 
 
 async def test_download_never_stages_a_partial_or_failed_transfer(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
     api = {"source": "api", "api": "orders", "path": "/api/ext/orders/x"}
 
     async def refused(arguments: dict, message: str) -> None:
-        result = await _call(client, headers, "download_artifact", arguments)
+        result = await mcp_call(client, headers, "download_artifact", arguments)
         assert result["isError"] is True, result
-        assert message in _text(result)
+        assert message in mcp_text(result)
         assert await _rows(seeded_db) == []
 
-    with _routes():
+    with ext_route_listing():
         # Cut short: fewer bytes than announced.
         gateway.reply = httpx.Response(
             200, stream=httpx.ByteStream(BINARY[:100]), headers={"content-length": "2051"}
@@ -363,15 +361,15 @@ async def test_download_never_stages_a_partial_or_failed_transfer(client, seeded
         gateway.reply = httpx.Response(404, json={"detail": "no such label"})
         await refused(api, "404: no such label")
         gateway.reply = httpx.Response(502, content=b"\x00" * 10_000)
-        result = await _call(client, headers, "download_artifact", api)
-        assert result["isError"] is True and len(_text(result)) < 600
+        result = await mcp_call(client, headers, "download_artifact", api)
+        assert result["isError"] is True and len(mcp_text(result)) < 600
         # A redirect is not the file and is not followed: its target is a URL
         # nobody offered. Neither is an answer without a body a file.
         gateway.reply = httpx.Response(
             302, content=b"<html>moved</html>", headers={"location": "https://elsewhere.example/f.bin", "content-type": "text/html"}
         )
         await refused(api, "302: the answer is a redirect, which is not followed")
-        assert "elsewhere.example" not in _text(await _call(client, headers, "download_artifact", api))
+        assert "elsewhere.example" not in mcp_text(await mcp_call(client, headers, "download_artifact", api))
         gateway.reply = httpx.Response(204)
         await refused(api, "204: the answer carries no whole file")
         gateway.reply = httpx.Response(206, content=BINARY[:10], headers={"content-range": "bytes 0-9/2051"})
@@ -392,13 +390,13 @@ def _resource(result: dict) -> tuple[dict, dict, bytes]:
     assert result["isError"] is False, result
     assert [item["type"] for item in result["content"]] == ["text", "resource"]
     resource = result["content"][1]["resource"]
-    return json.loads(_text(result)), resource, base64.b64decode(resource["blob"], validate=True)
+    return json.loads(mcp_text(result)), resource, base64.b64decode(resource["blob"], validate=True)
 
 
 async def test_resource_mode_returns_a_standard_embedded_resource(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
     with _nas_file(BINARY, filename="현장 사진 01.png", content_type="image/png") as open_stream:
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -431,11 +429,11 @@ async def test_resource_mode_returns_a_standard_embedded_resource(client, seeded
 
 async def test_resource_mode_is_not_cut_by_the_text_result_cap(client, seeded_db, admin_token, gateway):
     """max_result_bytes cuts text; a file is whole or refused, by its own limit."""
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=1024)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=1024)
     big = bytes(range(256)) * 2048  # 512 KiB
     with _s3_file(big, content_type="application/zip"):
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -445,11 +443,11 @@ async def test_resource_mode_is_not_cut_by_the_text_result_cap(client, seeded_db
     assert decoded == big and resource["uri"].endswith("/data.zip")
 
     # A gateway API's binary answer comes back the same way.
-    with _routes():
+    with ext_route_listing():
         gateway.reply = httpx.Response(
             200, content=BINARY, headers={"content-type": "image/png", "content-disposition": 'inline; filename="chart.png"'}
         )
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -460,29 +458,29 @@ async def test_resource_mode_is_not_cut_by_the_text_result_cap(client, seeded_db
 
 
 async def test_resource_mode_has_its_own_size_limit(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
-    await _put_settings(client, admin_token, artifact_resource_max_mb=1)
+    headers = await create_mcp_key(seeded_db, databases=["share"])
+    await put_mcp_settings(client, admin_token, artifact_resource_max_mb=1)
     over = b"\x07" * (MIB + 1)
     args = {"source": "nas", "connection": "share", "path": "lab/big.bin"}
     with _nas_file(over, filename="big.bin"):
         # Over the inline limit: refused whole, with the way out named...
-        result = await _call(client, headers, "download_artifact", {**args, "return_mode": "resource"})
+        result = await mcp_call(client, headers, "download_artifact", {**args, "return_mode": "resource"})
         assert result["isError"] is True
-        assert "returned inline may be (1 MiB per request); call again with return_mode=reference" in _text(result)
+        assert "returned inline may be (1 MiB per request); call again with return_mode=reference" in mcp_text(result)
         assert len(result["content"]) == 1
         # ...which works: by reference the same file fits (32 MiB).
-        artifact = _payload(await _call(client, headers, "download_artifact", {**args, "return_mode": "reference"}))
+        artifact = _payload(await mcp_call(client, headers, "download_artifact", {**args, "return_mode": "reference"}))
         assert artifact["size"] == MIB + 1
     with _nas_file(over[:MIB], filename="big.bin"):
         # Exactly at the limit it is returned.
-        _, _, decoded = _resource(await _call(client, headers, "download_artifact", {**args, "return_mode": "resource"}))
+        _, _, decoded = _resource(await mcp_call(client, headers, "download_artifact", {**args, "return_mode": "resource"}))
         assert len(decoded) == MIB
-        result = await _call(client, headers, "download_artifact", {**args, "return_mode": "inline"})
-        assert result["isError"] is True and "return_mode must be one of: reference, resource" in _text(result)
+        result = await mcp_call(client, headers, "download_artifact", {**args, "return_mode": "inline"})
+        assert result["isError"] is True and "return_mode must be one of: reference, resource" in mcp_text(result)
 
 
 async def test_resource_mode_follows_the_other_limits_and_can_be_switched_off(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
 
     async def schema() -> dict:
         resp = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
@@ -498,16 +496,16 @@ async def test_resource_mode_follows_the_other_limits_and_can_be_switched_off(cl
     assert _limits(artifact_key_mb=1, artifact_resource_max_mb=4).inline_bytes == MIB
 
     # 0 switches the mode off: not offered, and refused if asked for.
-    await _put_settings(client, admin_token, artifact_resource_max_mb=0)
+    await put_mcp_settings(client, admin_token, artifact_resource_max_mb=0)
     tool = await schema()
     assert tool["inputSchema"]["properties"]["return_mode"]["enum"] == ["reference"]
     assert "embedded resource" not in tool["description"]
     args = {"source": "nas", "connection": "share", "path": "a.bin"}
     with _nas_file(BINARY) as open_stream:
-        result = await _call(client, headers, "download_artifact", {**args, "return_mode": "resource"})
-        assert result["isError"] is True and "switched off by the administrator" in _text(result)
+        result = await mcp_call(client, headers, "download_artifact", {**args, "return_mode": "resource"})
+        assert result["isError"] is True and "switched off by the administrator" in mcp_text(result)
         open_stream.assert_not_awaited()
-        assert _payload(await _call(client, headers, "download_artifact", args))["size"] == len(BINARY)
+        assert _payload(await mcp_call(client, headers, "download_artifact", args))["size"] == len(BINARY)
 
 
 @pytest.mark.parametrize(
@@ -537,10 +535,10 @@ def test_the_resource_uri_name_fits_what_hosts_save_under(filename, expected):
 
 
 async def test_a_long_name_is_shortened_in_the_uri_only(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
     long_name = "분기 보고서 " * 30 + "최종.xlsx"
     with _nas_file(BINARY, filename=long_name):
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -555,9 +553,9 @@ async def test_a_long_name_is_shortened_in_the_uri_only(client, seeded_db, gatew
 
 
 async def test_an_empty_file_comes_back_inline_too(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["share"])
+    headers = await create_mcp_key(seeded_db, databases=["share"])
     with _nas_file(b"", filename="empty.dat"):
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "download_artifact",
@@ -570,8 +568,8 @@ async def test_an_empty_file_comes_back_inline_too(client, seeded_db, gateway):
 
 async def test_a_batch_shares_one_inline_allowance(client, seeded_db, admin_token, gateway):
     """Several files in one HTTP answer stay within the limit of one."""
-    headers = await _create_api_key(seeded_db, databases=["share"])
-    await _put_settings(client, admin_token, artifact_resource_max_mb=1)
+    headers = await create_mcp_key(seeded_db, databases=["share"])
+    await put_mcp_settings(client, admin_token, artifact_resource_max_mb=1)
     part = b"\x05" * (600 * 1024)
 
     def message(request_id: int) -> dict:
@@ -589,7 +587,7 @@ async def test_a_batch_shares_one_inline_allowance(client, seeded_db, admin_toke
         resp = await client.post("/mcp", json=[message(1), message(2)], headers=headers)
         first, second = (item["result"] for item in resp.json())
         assert first["isError"] is False and second["isError"] is True
-        assert "returned inline may be (1 MiB per request)" in _text(second)
+        assert "returned inline may be (1 MiB per request)" in mcp_text(second)
         # On its own the second call is served.
         resp = await client.post("/mcp", json=message(3), headers=headers)
         assert resp.json()["result"]["isError"] is False
@@ -599,7 +597,7 @@ async def test_a_batch_shares_one_inline_allowance(client, seeded_db, admin_toke
         resp = await client.post("/mcp", json=[message(4), message(5)], headers=headers)
         first, second = (item["result"] for item in resp.json())
         assert first["isError"] is False and second["isError"] is True
-        assert "already returns as much inline file data as one request may (1 MiB)" in _text(second)
+        assert "already returns as much inline file data as one request may (1 MiB)" in mcp_text(second)
         assert open_stream.await_count == 1
     assert mcp_artifacts._in_flight == {}
 
@@ -608,7 +606,7 @@ async def test_a_batch_shares_one_inline_allowance(client, seeded_db, admin_toke
 
 
 async def test_host_stages_fetches_and_deletes_a_file(client, seeded_db):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     resp = await _stage(client, headers, BINARY, name="보고서 v2.pdf")
     assert resp.status_code == 201, resp.text
     artifact = resp.json()
@@ -632,7 +630,7 @@ async def test_host_stages_fetches_and_deletes_a_file(client, seeded_db):
 
 
 async def test_an_empty_file_is_a_file(client, seeded_db):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     resp = await _stage(client, headers, b"", name="empty.dat")
     assert resp.status_code == 201
     fetched = await client.get(f"{ARTIFACTS}/{resp.json()['artifact_id']}", headers=headers)
@@ -651,7 +649,7 @@ async def test_an_empty_file_is_a_file(client, seeded_db):
     ],
 )
 async def test_staging_refuses_a_bad_checksum_or_name(client, seeded_db, override, status_code, message):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     resp = await _stage(client, headers, BINARY, **override)
     assert resp.status_code == status_code
     assert message in resp.json()["detail"]
@@ -659,16 +657,16 @@ async def test_staging_refuses_a_bad_checksum_or_name(client, seeded_db, overrid
 
 
 async def test_a_staged_name_keeps_only_its_last_component(client, seeded_db):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     resp = await _stage(client, headers, BINARY, name="../../etc/cron.d/job")
     assert resp.status_code == 201
     assert resp.json()["filename"] == "job"
 
 
 async def test_staging_is_bounded(client, seeded_db, admin_token):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
-    other = await _create_api_key(seeded_db, "other", routes=["mcp-api"])
-    await _put_settings(client, admin_token, artifact_max_mb=1, artifact_key_mb=2, artifact_total_mb=3)
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    other = await create_mcp_key(seeded_db, "other", routes=["mcp-api"])
+    await put_mcp_settings(client, admin_token, artifact_max_mb=1, artifact_key_mb=2, artifact_total_mb=3)
 
     # One artifact's size: refused, never cut to fit.
     resp = await _stage(client, headers, b"\x01" * (MIB + 1))
@@ -692,8 +690,8 @@ async def test_staging_is_bounded(client, seeded_db, admin_token):
 
 
 async def test_an_artifact_belongs_to_the_key_that_staged_it(client, seeded_db):
-    owner = await _create_api_key(seeded_db, routes=["mcp-api"])
-    other = await _create_api_key(seeded_db, "other", routes=["mcp-api"])
+    owner = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    other = await create_mcp_key(seeded_db, "other", routes=["mcp-api"])
     artifact_id = (await _stage(client, owner, BINARY)).json()["artifact_id"]
 
     # Someone else's, unknown, malformed: one answer, which says nothing more.
@@ -714,15 +712,15 @@ async def test_an_artifact_belongs_to_the_key_that_staged_it(client, seeded_db):
 
 
 async def test_artifact_routes_need_the_mcp_key_and_the_group(client, seeded_db, admin_token):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
-    no_grant = await _create_api_key(seeded_db, "no-grant", routes=["s3-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    no_grant = await create_mcp_key(seeded_db, "no-grant", routes=["s3-api"])
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
 
     assert (await _stage(client, auth_header(admin_token), BINARY)).status_code == 403
     assert (await _stage(client, no_grant, BINARY)).status_code == 403
     assert (await client.get(f"{ARTIFACTS}/{artifact_id}", headers=no_grant)).status_code == 403
 
-    await _put_settings(client, admin_token, artifacts=False)
+    await put_mcp_settings(client, admin_token, artifacts=False)
     for resp in (
         await _stage(client, headers, BINARY),
         await client.get(f"{ARTIFACTS}/{artifact_id}", headers=headers),
@@ -732,7 +730,7 @@ async def test_artifact_routes_need_the_mcp_key_and_the_group(client, seeded_db,
 
 
 async def test_artifacts_expire(client, seeded_db, db_session):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     await _backdate(seeded_db, artifact_id, seconds=901)
 
@@ -746,12 +744,58 @@ async def test_artifacts_expire(client, seeded_db, db_session):
     assert (await _stage(client, headers, BINARY)).json()["artifact_id"] != artifact_id
 
 
-async def test_damaged_bytes_are_never_handed_out(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+async def test_the_purge_loop_runs_on_the_active_color_and_outlives_a_failure(
+    client, seeded_db, monkeypatch, caplog
+):
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
-    factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as db:
+    await _backdate(seeded_db, artifact_id, seconds=901)
+
+    import app.database as database
+    from app.services import active_color
+
+    monkeypatch.setattr(
+        database,
+        "async_session",
+        sessions(seeded_db),
+    )
+    checks = []
+
+    async def is_active():
+        checks.append(1)
+        if len(checks) == 3:
+            raise RuntimeError("database is away")
+        return len(checks) == 2  # pass 1 as the standby, pass 2 as the active color
+
+    class Stop(Exception):
+        pass
+
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:  # after the standby pass: nothing deleted
+            assert len(await _rows(seeded_db)) == 1
+        if len(sleeps) == 4:
+            raise Stop
+
+    monkeypatch.setattr(active_color, "is_active_instance", is_active)
+    monkeypatch.setattr(active_color.asyncio, "sleep", sleep)
+    with caplog.at_level(logging.INFO, logger=mcp_artifacts.__name__), pytest.raises(Stop):
+        await mcp_artifacts.run_purge_loop(interval_seconds=7, first_delay_seconds=3)
+
+    assert sleeps == [3, 7, 7, 7]
+    assert await _rows(seeded_db) == []
+    assert "MCP artifact purge loop started" in caplog.text
+    assert "MCP artifacts: 1 expired artifact(s) deleted" in caplog.text
+    assert "MCP artifact purge pass failed" in caplog.text
+
+
+async def test_damaged_bytes_are_never_handed_out(client, seeded_db, admin_token, gateway):
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
+    artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
+    async with sessions(seeded_db)() as db:
         await db.execute(
             update(McpArtifact).where(McpArtifact.id == artifact_id).values(content=BINARY[:-1] + b"?")
         )
@@ -759,15 +803,15 @@ async def test_damaged_bytes_are_never_handed_out(client, seeded_db, admin_token
 
     resp = await client.get(f"{ARTIFACTS}/{artifact_id}", headers=headers)
     assert resp.status_code == 500 and "integrity" in resp.json()["detail"]
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
             {"destination": {"api": "orders", "path": "/api/ext/orders/files"}, "artifacts": [{"artifact_id": artifact_id}]},
         )
     assert result["isError"] is True
-    assert "integrity" in _text(result) and "nothing was sent" in _text(result)
+    assert "integrity" in mcp_text(result) and "nothing was sent" in mcp_text(result)
     assert gateway.external == []
 
 
@@ -775,19 +819,19 @@ async def test_damaged_bytes_are_never_handed_out(client, seeded_db, admin_token
 
 
 async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await expose_routes(client, admin_token, "orders")
     staged = (await _stage(client, headers, BINARY, name="local.pdf")).json()
     with _s3_file(b"\x89PNG\x00\x01", content_type="image/png"):
         downloaded = _payload(
-            await _call(
+            await mcp_call(
                 client, headers, "download_artifact", {"source": "s3", "connection": "store", "bucket": "b", "key": "img/a.png"}
             )
         )
 
     gateway.reply = httpx.Response(201, json={"id": 42, "stored": 2})
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
@@ -801,7 +845,7 @@ async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, adm
             },
         )
     assert result["isError"] is False, result
-    meta = json.loads(_text(result, 0))
+    meta = json.loads(mcp_text(result, 0))
     assert meta["status"] == 201 and meta["api"] == "orders" and meta["method"] == "POST"
     assert meta["artifacts"] == [
         {
@@ -819,7 +863,7 @@ async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, adm
             "sha256": _sha(b"\x89PNG\x00\x01"),
         },
     ]
-    assert json.loads(_text(result, 1)) == {"id": 42, "stored": 2}
+    assert json.loads(mcp_text(result, 1)) == {"id": 42, "stored": 2}
 
     sent = gateway.external[-1]
     assert sent.method == "POST" and sent.url.path == "/api/ext/orders/7/files"
@@ -842,8 +886,8 @@ async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, adm
 
 
 async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     # Longer than one encoding chunk and not a multiple of 3: the chunks' base64
     # has to join into the base64 of the whole.
     photo = bytes(range(256)) * 2000 + b"\x01"
@@ -851,8 +895,8 @@ async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, 
     scan_id = (await _stage(client, headers, BINARY, name="scan.pdf")).json()["artifact_id"]
 
     gateway.reply = httpx.Response(200, json={"defects": 2})
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
@@ -870,7 +914,7 @@ async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, 
             },
         )
     assert result["isError"] is False, result
-    meta = json.loads(_text(result, 0))
+    meta = json.loads(mcp_text(result, 0))
     assert meta["status"] == 200 and meta["api"] == "orders" and meta["method"] == "POST"
     described = {"filename": "photo.png", "size": len(photo), "sha256": _sha(photo)}
     assert meta["artifacts"] == [
@@ -885,7 +929,7 @@ async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, 
             "sha256": _sha(BINARY),
         },
     ]
-    assert json.loads(_text(result, 1)) == {"defects": 2}
+    assert json.loads(mcp_text(result, 1)) == {"defects": 2}
 
     sent = gateway.external[-1]
     assert sent.method == "POST" and sent.url.path == "/api/ext/orders/analyze"
@@ -926,8 +970,8 @@ async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, 
     ],
 )
 async def test_json_upload_refuses_before_anything_is_sent(client, seeded_db, admin_token, gateway, change, message):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", "status")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", "status")
     good = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     arguments = {
         "destination": {"api": "orders", "path": "/api/ext/orders/analyze"},
@@ -935,24 +979,24 @@ async def test_json_upload_refuses_before_anything_is_sent(client, seeded_db, ad
         **change,
     }
     arguments = json.loads(json.dumps(arguments).replace("GOOD", good))
-    with _routes():
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+    with ext_route_listing():
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
     assert result["isError"] is True
-    assert message in _text(result)
+    assert message in mcp_text(result)
     assert gateway.external == []
 
 
 async def test_json_upload_takes_only_the_keys_own_live_artifacts(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    other = await _create_api_key(seeded_db, "other", routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    other = await create_mcp_key(seeded_db, "other", routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     mine = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     theirs = (await _stage(client, other, b"\x00their bytes")).json()["artifact_id"]
     expired = (await _stage(client, headers, b"\x00old")).json()["artifact_id"]
     await _backdate(seeded_db, expired, seconds=901)
-    with _routes():
+    with ext_route_listing():
         for bad in (theirs, expired):
-            result = await _call(
+            result = await mcp_call(
                 client,
                 headers,
                 "upload_staged_artifacts",
@@ -962,49 +1006,49 @@ async def test_json_upload_takes_only_the_keys_own_live_artifacts(client, seeded
                 },
             )
             assert result["isError"] is True
-            assert "json.second: Artifact not found; nothing was sent" in _text(result)
+            assert "json.second: Artifact not found; nothing was sent" in mcp_text(result)
     assert gateway.external == []
 
 
 async def test_json_upload_counts_a_file_each_time_it_is_sent(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
     artifact_id = (await _stage(client, headers, b"\x07" * (600 * 1024))).json()["artifact_id"]
     destination = {"api": "orders", "path": "/api/ext/orders/analyze"}
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client, headers, "upload_staged_artifacts", {"destination": destination, "json": [{"$artifact": artifact_id}]}
         )
         assert result["isError"] is False, result
-        result = await _call(
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
             {"destination": destination, "json": [{"$artifact": artifact_id}, {"$artifact": artifact_id}]},
         )
     assert result["isError"] is True
-    assert "at most 1 MiB of artifacts; nothing was sent" in _text(result)
+    assert "at most 1 MiB of artifacts; nothing was sent" in mcp_text(result)
     assert len(gateway.external) == 1
 
 
 async def test_json_upload_reports_a_refusal_and_an_unknown_outcome(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     arguments = {
         "destination": {"api": "orders", "path": "/api/ext/orders/analyze"},
         "json": {"image": {"$artifact": artifact_id}},
     }
-    with _routes():
+    with ext_route_listing():
         gateway.reply = httpx.Response(422, json={"detail": "not an image"})
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is True
-        assert json.loads(_text(result, 0))["status"] == 422
-        assert "not an image" in _text(result, 1)
+        assert json.loads(mcp_text(result, 0))["status"] == 422
+        assert "not an image" in mcp_text(result, 1)
         with patch.object(gateway, "handle_async_request", side_effect=httpx.ReadTimeout("slow")):
-            result = await _call(client, headers, "upload_staged_artifacts", arguments)
+            result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
     assert result["isError"] is True
-    assert "whether it processed the upload is not known" in _text(result)
+    assert "whether it processed the upload is not known" in mcp_text(result)
 
 
 async def test_a_json_body_is_encoded_as_it_is_sent():
@@ -1053,9 +1097,9 @@ def _workspace_file(body: bytes, name: str, mime: str = "image/png", **override)
 async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answer_unchanged(
     client, seeded_db, admin_token, gateway
 ):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _expose(client, admin_token, "orders")
-    listed = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await expose_routes(client, admin_token, "orders")
+    listed = (await mcp_rpc(client, headers, "tools/list")).json()["result"]["tools"]
     tools = {tool["name"]: tool for tool in listed}
     # The schema marks the file argument for hosts that fill it in from the agent's workspace.
     file_schema = tools["stage_artifacts"]["inputSchema"]["properties"]["files"]["items"]["properties"]["file"]
@@ -1063,7 +1107,7 @@ async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answ
 
     capture, map_1, map_2 = BINARY, b"\x89PNG map one", b"\x89PNG map two"
     answer = _payload(
-        await _call(
+        await mcp_call(
             client,
             headers,
             "stage_artifacts",
@@ -1088,14 +1132,14 @@ async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answ
     assert [(row.source, row.size) for row in rows] == [("upload", len(capture)), ("upload", len(map_1)), ("upload", len(map_2))]
 
     # Staging the same files again is the same artifacts: a repeated call is safe.
-    again = _payload(await _call(client, headers, "stage_artifacts", {"files": [{"field": "capture", "file": _workspace_file(capture, "capture.png")}]}))
+    again = _payload(await mcp_call(client, headers, "stage_artifacts", {"files": [{"field": "capture", "file": _workspace_file(capture, "capture.png")}]}))
     assert again["artifacts"][0]["artifact_id"] == staged[0]["artifact_id"]
     assert len(await _rows(seeded_db)) == 3
 
     # The answer goes to the upload tool as it is; the receiver sees the exact parts and fields.
     gateway.reply = httpx.Response(201, json={"ok": True})
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
@@ -1111,14 +1155,14 @@ async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answ
     # A size or checksum that is not the staged artifact's sends nothing.
     sent_before = len(gateway.external)
     for wrong in ({"size": len(capture) + 1}, {"sha256": _sha(b"other")}):
-        with _routes():
-            refused = await _call(
+        with ext_route_listing():
+            refused = await mcp_call(
                 client,
                 headers,
                 "upload_staged_artifacts",
                 {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": [{**staged[0], **wrong}]},
             )
-        assert refused["isError"] is True and "is not the file its size and sha256 name; nothing was sent" in _text(refused)
+        assert refused["isError"] is True and "is not the file its size and sha256 name; nothing was sent" in mcp_text(refused)
     assert len(gateway.external) == sent_before
 
 
@@ -1134,36 +1178,36 @@ async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answ
     ],
 )
 async def test_stage_artifacts_keeps_nothing_when_one_file_is_bad(client, seeded_db, admin_token, gateway, bad, message):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _expose(client, admin_token, "orders")
-    result = await _call(
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await expose_routes(client, admin_token, "orders")
+    result = await mcp_call(
         client,
         headers,
         "stage_artifacts",
         # A good file first: it must not be kept either.
         {"files": [{"file": _workspace_file(b"good file", "good.png")}, {"file": _workspace_file(BINARY, "bad.png", **bad)}]},
     )
-    assert result["isError"] is True and message in _text(result), result
+    assert result["isError"] is True and message in mcp_text(result), result
     assert await _rows(seeded_db) == []
 
 
 async def test_stage_artifacts_is_bounded_like_every_artifact(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
     files = [{"file": _workspace_file(bytes([i]) * (600 * 1024), f"part-{i}.bin")} for i in range(2)]
     # Each fits, together they pass the size one upload may carry: nothing is staged.
-    result = await _call(client, headers, "stage_artifacts", {"files": files})
-    assert result["isError"] is True and "nothing was staged" in _text(result), result
+    result = await mcp_call(client, headers, "stage_artifacts", {"files": files})
+    assert result["isError"] is True and "nothing was staged" in mcp_text(result), result
     assert await _rows(seeded_db) == []
     too_many = [{"file": _workspace_file(bytes([i]), f"f{i}.bin")} for i in range(11)]
-    result = await _call(client, headers, "stage_artifacts", {"files": too_many})
-    assert result["isError"] is True and "files holds 1 to 10 entries" in _text(result)
+    result = await mcp_call(client, headers, "stage_artifacts", {"files": too_many})
+    assert result["isError"] is True and "files holds 1 to 10 entries" in mcp_text(result)
     # Another key cannot use what this key staged.
-    one = _payload(await _call(client, headers, "stage_artifacts", {"files": files[:1]}))["artifacts"]
-    other = await _create_api_key(seeded_db, name="other", routes=EXT_KEY_ROUTES, databases=["store"])
-    with _routes():
-        refused = await _call(client, other, "upload_staged_artifacts", {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": one})
-    assert refused["isError"] is True and "nothing was sent" in _text(refused)
+    one = _payload(await mcp_call(client, headers, "stage_artifacts", {"files": files[:1]}))["artifacts"]
+    other = await create_mcp_key(seeded_db, name="other", routes=EXT_KEY_ROUTES, databases=["store"])
+    with ext_route_listing():
+        refused = await mcp_call(client, other, "upload_staged_artifacts", {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": one})
+    assert refused["isError"] is True and "nothing was sent" in mcp_text(refused)
 
 
 @pytest.mark.parametrize(
@@ -1193,33 +1237,33 @@ async def test_stage_artifacts_is_bounded_like_every_artifact(client, seeded_db,
     ],
 )
 async def test_upload_refuses_before_anything_is_sent(client, seeded_db, admin_token, gateway, change, message):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders", "status")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders", "status")
     good = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     arguments = {
         "destination": {"api": "orders", "path": "/api/ext/orders/files"},
         "artifacts": [{"artifact_id": good}],
         **change,
     }
-    with _routes():
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+    with ext_route_listing():
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
     assert result["isError"] is True
-    assert message in _text(result)
+    assert message in mcp_text(result)
     assert gateway.external == []
 
 
 async def test_upload_sends_nothing_unless_every_artifact_is_usable(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    other = await _create_api_key(seeded_db, "other", routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    other = await create_mcp_key(seeded_db, "other", routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     mine = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     theirs = (await _stage(client, other, b"\x00their bytes")).json()["artifact_id"]
     expired = (await _stage(client, headers, b"\x00old")).json()["artifact_id"]
     await _backdate(seeded_db, expired, seconds=901)
 
-    with _routes():
+    with ext_route_listing():
         for bad in (theirs, expired):
-            result = await _call(
+            result = await mcp_call(
                 client,
                 headers,
                 "upload_staged_artifacts",
@@ -1229,19 +1273,19 @@ async def test_upload_sends_nothing_unless_every_artifact_is_usable(client, seed
                 },
             )
             assert result["isError"] is True
-            assert "artifacts[1]: Artifact not found; nothing was sent" in _text(result)
+            assert "artifacts[1]: Artifact not found; nothing was sent" in mcp_text(result)
     assert gateway.external == []
 
 
 async def test_upload_carries_at_most_one_artifact_limit(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
     ids = [
         (await _stage(client, headers, bytes([n]) * (600 * 1024), name=f"part{n}")).json()["artifact_id"]
         for n in (1, 2)
     ]
-    with _routes():
-        result = await _call(
+    with ext_route_listing():
+        result = await mcp_call(
             client,
             headers,
             "upload_staged_artifacts",
@@ -1251,52 +1295,52 @@ async def test_upload_carries_at_most_one_artifact_limit(client, seeded_db, admi
             },
         )
     assert result["isError"] is True
-    assert "at most 1 MiB of artifacts; nothing was sent" in _text(result)
+    assert "at most 1 MiB of artifacts; nothing was sent" in mcp_text(result)
     assert gateway.external == []
 
 
 async def test_upload_reports_the_destinations_answer(client, seeded_db, admin_token, gateway):
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
-    await _expose(client, admin_token, "orders")
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await expose_routes(client, admin_token, "orders")
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     arguments = {
         "destination": {"api": "orders", "path": "/api/ext/orders/files"},
         "artifacts": [{"artifact_id": artifact_id}],
     }
-    with _routes():
+    with ext_route_listing():
         # A refusal is shown as one, with what the destination said.
         gateway.reply = httpx.Response(422, json={"detail": "unsupported file type"})
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is True
-        assert json.loads(_text(result, 0))["status"] == 422
-        assert "unsupported file type" in _text(result, 1)
+        assert json.loads(mcp_text(result, 0))["status"] == 422
+        assert "unsupported file type" in mcp_text(result, 1)
         # The artifact is still staged: the upload can be sent again.
         gateway.reply = httpx.Response(200, json={"ok": True})
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is False
 
         # A binary answer to an upload that worked is left out, not an error:
         # "failed" would have the model send everything a second time.
         gateway.reply = httpx.Response(200, content=b"\x89PNG\x00", headers={"content-type": "image/png"})
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is False
-        assert json.loads(_text(result, 0))["status"] == 200
-        assert _text(result, 1) == "[binary response not returned: image/png]"
+        assert json.loads(mcp_text(result, 0))["status"] == 200
+        assert mcp_text(result, 1) == "[binary response not returned: image/png]"
         gateway.reply = httpx.Response(500, content=b"\x00\x01", headers={"content-type": "application/octet-stream"})
-        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is True
 
         # No answer: the outcome on the other side is not known, and says so.
         with patch.object(gateway, "handle_async_request", side_effect=httpx.ReadTimeout("slow")):
-            result = await _call(client, headers, "upload_staged_artifacts", arguments)
+            result = await mcp_call(client, headers, "upload_staged_artifacts", arguments)
         assert result["isError"] is True
-        assert "whether it processed the upload is not known" in _text(result)
+        assert "whether it processed the upload is not known" in mcp_text(result)
 
 
 async def test_binary_never_rides_in_tool_json(client, seeded_db, admin_token, gateway):
     """A multi-megabyte file crosses as a reference in both directions."""
-    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
-    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=4096)
+    headers = await create_mcp_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await put_mcp_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=4096)
     big = bytes(range(256)) * (3 * MIB // 256)
 
     with _s3_file(big, content_type="application/zip"):
@@ -1317,7 +1361,7 @@ async def test_binary_never_rides_in_tool_json(client, seeded_db, admin_token, g
     artifact = json.loads(resp.json()["result"]["content"][0]["text"])
     assert artifact["size"] == 3 * MIB and artifact["sha256"] == _sha(big)
 
-    with _routes():
+    with ext_route_listing():
         request = {
             "jsonrpc": "2.0",
             "id": 2,
@@ -1388,24 +1432,24 @@ def test_the_smaller_limit_wins():
 
 
 async def test_a_file_no_key_could_hold_is_too_large(client, seeded_db, admin_token):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
-    await _put_settings(client, admin_token, artifact_max_mb=32, artifact_key_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    await put_mcp_settings(client, admin_token, artifact_max_mb=32, artifact_key_mb=1)
     resp = await _stage(client, headers, b"\x01" * (MIB + 1))
     assert resp.status_code == 413 and "1 MiB" in resp.json()["detail"]
 
 
 async def test_a_busy_key_is_told_to_retry(client, seeded_db, gateway):
-    headers = await _create_api_key(seeded_db, databases=["store"])
+    headers = await create_mcp_key(seeded_db, databases=["store"])
     artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
     limits = _limits()
     with mcp_artifacts.transfer_slot("agent", limits), mcp_artifacts.transfer_slot("agent", limits):
         assert (await _stage(client, headers, b"\x00more")).status_code == 429
         assert (await client.get(f"{ARTIFACTS}/{artifact_id}", headers=headers)).status_code == 429
         with _s3_file(BINARY) as get_object:
-            result = await _call(
+            result = await mcp_call(
                 client, headers, "download_artifact", {"source": "s3", "connection": "store", "bucket": "b", "key": "k"}
             )
-        assert result["isError"] is True and "Too many artifact transfers" in _text(result)
+        assert result["isError"] is True and "Too many artifact transfers" in mcp_text(result)
         # Refused before the source was read.
         get_object.assert_not_awaited()
     assert (await client.get(f"{ARTIFACTS}/{artifact_id}", headers=headers)).status_code == 200
@@ -1414,8 +1458,8 @@ async def test_a_busy_key_is_told_to_retry(client, seeded_db, gateway):
 
 async def test_concurrent_stagings_cannot_overrun_the_quota(client, seeded_db, admin_token):
     """Counting and inserting happen one staging at a time."""
-    keys = [await _create_api_key(seeded_db, f"k{n}", routes=["mcp-api"]) for n in range(4)]
-    await _put_settings(client, admin_token, artifact_max_mb=1, artifact_key_mb=1, artifact_total_mb=2)
+    keys = [await create_mcp_key(seeded_db, f"k{n}", routes=["mcp-api"]) for n in range(4)]
+    await put_mcp_settings(client, admin_token, artifact_max_mb=1, artifact_key_mb=1, artifact_total_mb=2)
     responses = await asyncio.gather(
         *(_stage(client, key, bytes([n]) * MIB, name=f"f{n}") for n, key in enumerate(keys))
     )
@@ -1426,7 +1470,7 @@ async def test_concurrent_stagings_cannot_overrun_the_quota(client, seeded_db, a
 async def test_a_cached_artifact_that_vanished_is_staged_anew(client, seeded_db, monkeypatch):
     """Deleting does not wait for a staging: the row found may be gone by the
     time it is renewed, and then its id must not be handed out."""
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     first = (await _stage(client, headers, BINARY)).json()
     # The renewal finds no row, as after a delete between the look and the update.
     monkeypatch.setattr(mcp_artifacts, "update", lambda model: update(model).where(false()))
@@ -1440,9 +1484,9 @@ async def test_a_cached_artifact_that_vanished_is_staged_anew(client, seeded_db,
 async def test_nothing_of_the_body_is_read_before_the_request_is_accepted(client, seeded_db, admin_token):
     """Who is asking, the checksum, the name and the announced size are judged
     first: a caller turned away has had none of its bytes taken in."""
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
-    no_grant = await _create_api_key(seeded_db, "no-grant", routes=["s3-api"])
-    await _put_settings(client, admin_token, artifact_max_mb=1)
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
+    no_grant = await create_mcp_key(seeded_db, "no-grant", routes=["s3-api"])
+    await put_mcp_settings(client, admin_token, artifact_max_mb=1)
     taken = 0
 
     async def body():
@@ -1528,7 +1572,7 @@ def test_artifact_settings_are_range_checked():
 
 
 async def test_staged_rows_are_counted_without_loading_bytes(client, seeded_db, db_session):
-    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    headers = await create_mcp_key(seeded_db, routes=["mcp-api"])
     await _stage(client, headers, BINARY)
     total = (await db_session.execute(select(func.sum(McpArtifact.size)))).scalar_one()
     assert total == len(BINARY)
