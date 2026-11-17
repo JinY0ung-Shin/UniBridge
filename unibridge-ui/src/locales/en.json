@@ -548,7 +548,8 @@
     "deleteKey": "Delete API key {{name}}",
     "descriptionPlaceholder": "Describe what this key is for",
     "apiKeyPlaceholderEdit": "Leave empty to keep current",
-    "apiKeyPlaceholderNew": "Auto-generated key",
+    "apiKeyPlaceholderNew": "Leave empty to have one generated",
+    "apiKeyHint": "16 to 256 characters: letters, digits and symbols, no spaces. A value another key already uses is refused.",
     "generateKey": "Generate New Key",
     "keyCreatedMessage": "API key created. Copy it now — you won't be able to see it again.",
     "copied": "Copied!",
@@ -874,8 +875,8 @@
     "toggleFailed": "Failed to update user status",
     "deleteFailed": "Failed to delete user",
     "enableConfirm": "Enable user \"{{name}}\"?",
-    "disableConfirm": "Disable user \"{{name}}\"?",
-    "deleteConfirm": "Delete user \"{{name}}\"?",
+    "disableConfirm": "Disable user \"{{name}}\"? Their personal API key stops working too; once the account is enabled again they can renew it themselves.",
+    "deleteConfirm": "Delete user \"{{name}}\"? Their personal API key is deleted with the account.",
     "pending": "Pending"
   },
   "querySettings": {

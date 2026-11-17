@@ -19,6 +19,7 @@ import { useCopyFeedback } from '../components/useCopyFeedback';
 import { useCanWrite } from '../components/useCanWrite';
 import { usePermissions } from '../components/usePermissions';
 import ResourceModal from '../components/ResourceModal';
+import { apiErrorDetail } from '../utils/apiError';
 import { isGrantableRoute, routeUriLabel } from '../utils/gatewayRoutes';
 import { formatKST } from '../utils/time';
 import './ApiKeys.css';
@@ -107,6 +108,11 @@ function ApiKeys() {
     enabled: canReadNasConnections,
   });
 
+  // The server's reason matters here: a key value that is too short or already
+  // in use is something the admin can fix, unlike a bare "failed to save".
+  const showSaveError = (err: unknown) =>
+    addToast({ type: 'error', title: t('apiKeys.saveFailed'), message: apiErrorDetail(err) });
+
   const createMut = useMutation({
     mutationFn: createApiKey,
     onSuccess: (result) => {
@@ -118,7 +124,7 @@ function ApiKeys() {
         closeModal();
       }
     },
-    onError: () => addToast({ type: 'error', title: t('apiKeys.saveFailed') }),
+    onError: showSaveError,
   });
 
   const updateMut = useMutation({
@@ -131,7 +137,7 @@ function ApiKeys() {
         closeModal();
       }
     },
-    onError: () => addToast({ type: 'error', title: t('apiKeys.saveFailed') }),
+    onError: showSaveError,
   });
 
   const deleteMut = useMutation({
@@ -515,10 +521,16 @@ function ApiKeys() {
                     onChange={(e) => setForm((p) => ({ ...p, apiKey: e.target.value }))}
                     placeholder={editingName ? t('apiKeys.apiKeyPlaceholderEdit') : t('apiKeys.apiKeyPlaceholderNew')}
                     aria-label={t('apiKeys.apiKey')}
+                    aria-describedby="api-key-secret-hint"
+                    minLength={16}
+                    maxLength={256}
+                    pattern="[!-~]+"
+                    title={t('apiKeys.apiKeyHint')}
                   />
                   <button type="button" className="btn btn-sm btn-secondary generate-btn" onClick={() => setForm((p) => ({ ...p, apiKey: generateKey() }))}>
                     {t('apiKeys.generateKey')}
                   </button>
+                  <small id="api-key-secret-hint" className="form-hint">{t('apiKeys.apiKeyHint')}</small>
                 </div>
                 <div className="form-group form-group--full">
                   <label className="checkbox-list-item master-key-toggle">

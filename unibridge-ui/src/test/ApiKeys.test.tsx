@@ -479,6 +479,41 @@ describe('ApiKeys', () => {
     expect(screen.getByRole('button', { name: 'Generated API key copied' })).toHaveTextContent('Copied!');
   });
 
+  it('shows why the server refused a key and keeps the form open', async () => {
+    mockedCreateApiKey.mockRejectedValue({
+      response: { status: 409, data: { detail: 'This key value is already used by another API key' } },
+    });
+
+    renderWithProviders(<ApiKeys />);
+    await waitFor(() => {
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await typeKeyName('twin-app');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByText('This key value is already used by another API key')).toBeInTheDocument();
+    expect(screen.getByText('Failed to save API key')).toBeInTheDocument();
+    // Still on the form, so the admin can change the value and retry.
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('twin-app');
+  });
+
+  it('tells the browser the key value rules', async () => {
+    renderWithProviders(<ApiKeys />);
+    await waitFor(() => {
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+
+    const keyField = screen.getByRole('textbox', { name: 'API Key' });
+    expect(keyField).toHaveAttribute('minlength', '16');
+    expect(keyField).toHaveAttribute('maxlength', '256');
+    expect(keyField).toHaveAccessibleDescription(/16 to 256 characters/);
+    // The value the form generates passes those rules itself.
+    expect((keyField as HTMLInputElement).value).toMatch(/^[!-~]{16,256}$/);
+    expect(keyField).toBeValid();
+  });
+
   it('shows copy failure feedback for a newly created key', async () => {
     clipboardWriteText.mockRejectedValueOnce(new Error('blocked'));
     mockedCreateApiKey.mockResolvedValue({
