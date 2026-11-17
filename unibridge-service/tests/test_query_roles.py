@@ -681,7 +681,7 @@ class TestQueryExecute:
                 "/admin/api-keys",
                 json={
                     "name": "graph-app",
-                    "api_key": "graph-key",
+                    "api_key": "unit-test-key-graph-key",
                     "allowed_databases": ["graph"],
                     "allowed_routes": ["query-api"],
                 },
@@ -819,7 +819,7 @@ class TestQueryExecute:
     ):
         """Even a fully privileged key never unlocks procedure/schema Cypher."""
         await self._create_api_key(
-            client, admin_token, name="graph-full", key="graph-full-key",
+            client, admin_token, name="graph-full", key="unit-test-key-graph-full-key",
             allow_insert=True, allow_update=True, allow_delete=True,
         )
 

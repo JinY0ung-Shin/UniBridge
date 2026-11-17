@@ -39,6 +39,8 @@ async def test_query_template_write_route_is_granted_independently(client, admin
     }
 
     async def list_resources(resource_type):
+        if resource_type == "consumers":
+            return {"items": []}
         assert resource_type == "routes"
         return {"items": list(route_state.values())}
 
@@ -54,7 +56,7 @@ async def test_query_template_write_route_is_granted_independently(client, admin
             "/admin/api-keys",
             json={
                 "name": "template-editor",
-                "api_key": "editor-key",
+                "api_key": "unit-test-key-editor-key",
                 "allowed_databases": ["maindb"],
                 "allowed_routes": ["query-template-write-api"],
             },
@@ -96,6 +98,8 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
     }
 
     async def list_resources(resource_type):
+        if resource_type == "consumers":
+            return {"items": []}
         assert resource_type == "routes"
         return {"items": list(route_state.values())}
 
@@ -271,6 +275,8 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
     }
 
     async def list_resources(resource_type):
+        if resource_type == "consumers":
+            return {"items": []}
         assert resource_type == "routes"
         return {"items": list(route_state.values())}
 
@@ -327,7 +333,7 @@ async def test_create_api_key(client, admin_token):
             json={
                 "name": "test-app",
                 "description": "Test application",
-                "api_key": "key-abc123",
+                "api_key": "unit-test-key-key-abc123",
                 "allowed_databases": ["mydb"],
                 "allowed_routes": [],
             },
@@ -337,7 +343,7 @@ async def test_create_api_key(client, admin_token):
         data = resp.json()
         assert data["name"] == "test-app"
         assert data["description"] == "Test application"
-        assert data["api_key"] == "key-abc123"
+        assert data["api_key"] == "unit-test-key-key-abc123"
         assert data["key_created"] is True
         assert data["allowed_databases"] == ["mydb"]
 
@@ -367,7 +373,7 @@ async def test_create_master_api_key_stores_wildcards_and_grants_all_routes(clie
             "/admin/api-keys",
             json={
                 "name": "master-app",
-                "api_key": "master-key",
+                "api_key": "unit-test-key-master-key",
                 "is_master": True,
                 "allowed_databases": ["ignored-db"],
                 "allowed_routes": ["query-api"],
@@ -400,7 +406,7 @@ async def test_create_api_key_rejects_reserved_dunder_name(client, admin_token):
     such a name would leak its traffic to keyless self-scoped users."""
     resp = await client.post(
         "/admin/api-keys",
-        json={"name": "__no_self_api_key__", "api_key": "key-x"},
+        json={"name": "__no_self_api_key__", "api_key": "unit-test-key-key-x"},
         headers=auth_header(admin_token),
     )
     assert resp.status_code == 400
@@ -423,7 +429,7 @@ async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes
             "/admin/api-keys",
             json={
                 "name": "partial-app",
-                "api_key": "pk-123",
+                "api_key": "unit-test-key-pk-123",
                 "allowed_routes": ["query-api"],
             },
             headers=auth_header(admin_token),
@@ -454,12 +460,12 @@ async def test_create_api_key_duplicate(client, admin_token):
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "dup-app", "api_key": "key-1"},
+            json={"name": "dup-app", "api_key": "unit-test-key-key-1"},
             headers=auth_header(admin_token),
         )
         resp = await client.post(
             "/admin/api-keys",
-            json={"name": "dup-app", "api_key": "key-2"},
+            json={"name": "dup-app", "api_key": "unit-test-key-key-2"},
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 409
@@ -469,7 +475,7 @@ async def test_create_api_key_rejects_reserved_deny_all_name(client, admin_token
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await client.post(
             "/admin/api-keys",
-            json={"name": DENY_ALL_CONSUMER, "api_key": "key-reserved"},
+            json={"name": DENY_ALL_CONSUMER, "api_key": "unit-test-key-key-reserved"},
             headers=auth_header(admin_token),
         )
 
@@ -489,7 +495,7 @@ async def test_update_api_key_access(client, admin_token):
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "update-app", "api_key": "key-u1"},
+            json={"name": "update-app", "api_key": "unit-test-key-key-u1"},
             headers=auth_header(admin_token),
         )
 
@@ -538,7 +544,7 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "deny-update-app", "api_key": "key-du1", "allowed_routes": ["query-api", "llm-proxy"]},
+            json={"name": "deny-update-app", "api_key": "unit-test-key-key-du1", "allowed_routes": ["query-api", "llm-proxy"]},
             headers=auth_header(admin_token),
         )
 
@@ -573,6 +579,8 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
     }
 
     async def list_resources(resource_type):
+        if resource_type == "consumers":
+            return {"items": []}
         assert resource_type == "routes"
         return {"items": list(route_state.values())}
 
@@ -591,7 +599,7 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
             "/admin/api-keys",
             json={
                 "name": "moving-app",
-                "api_key": "mv-123",
+                "api_key": "unit-test-key-mv-123",
                 "allowed_routes": ["query-api"],
             },
             headers=auth_header(admin_token),
@@ -629,7 +637,7 @@ async def test_delete_api_key(client, admin_token):
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "del-app", "api_key": "key-d1"},
+            json={"name": "del-app", "api_key": "unit-test-key-key-d1"},
             headers=auth_header(admin_token),
         )
         resp = await client.delete(
@@ -653,7 +661,7 @@ async def test_query_execute_via_apikey_header(client, admin_token):
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "query-app", "api_key": "qk-123",
+            json={"name": "query-app", "api_key": "unit-test-key-qk-123",
                   "allowed_databases": ["testdb"], "allowed_routes": ["query-api"]},
             headers=auth_header(admin_token),
         )
@@ -681,7 +689,7 @@ async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_
             "/admin/api-keys",
             json={
                 "name": "allowed-app",
-                "api_key": "ak-123",
+                "api_key": "unit-test-key-ak-123",
                 "allowed_databases": ["allowed-db"],
                 "allowed_routes": ["query-api"],
             },
@@ -734,7 +742,7 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
             "/admin/api-keys",
             json={
                 "name": "readonly-app",
-                "api_key": "ro-123",
+                "api_key": "unit-test-key-ro-123",
                 "allowed_databases": ["allowed-db"],
                 "allowed_routes": ["query-api"],
             },
@@ -771,7 +779,7 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "restricted-app", "api_key": "rk-123",
+            json={"name": "restricted-app", "api_key": "unit-test-key-rk-123",
                   "allowed_databases": ["allowed-db"], "allowed_routes": ["query-api"]},
             headers=auth_header(admin_token),
         )
@@ -804,7 +812,7 @@ async def test_create_api_key_defaults_write_flags_off_and_no_expiry(client, adm
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await _create_key(client, admin_token, mock_apisix, {
             "name": "plain-app",
-            "api_key": "pk-1",
+            "api_key": "unit-test-key-pk-1",
             "allowed_databases": ["mydb"],
         })
     data = resp.json()
@@ -820,7 +828,7 @@ async def test_create_api_key_with_write_flags_and_allowed_tables(client, admin_
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await _create_key(client, admin_token, mock_apisix, {
             "name": "writer-app",
-            "api_key": "wk-1",
+            "api_key": "unit-test-key-wk-1",
             "allowed_databases": ["mydb"],
             "allow_insert": True,
             "allow_delete": True,
@@ -837,7 +845,7 @@ async def test_update_api_key_write_flags_and_clear_allowed_tables(client, admin
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "flagged-app",
-            "api_key": "fk-1",
+            "api_key": "unit-test-key-fk-1",
             "allowed_tables": ["orders"],
         })
 
@@ -868,7 +876,7 @@ async def test_query_execute_apikey_insert_allowed_with_flag(client, admin_token
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "insert-app",
-            "api_key": "ik-1",
+            "api_key": "unit-test-key-ik-1",
             "allowed_databases": ["allowed-db"],
             "allowed_routes": ["query-api"],
             "allow_insert": True,
@@ -905,7 +913,7 @@ async def test_query_execute_apikey_update_delete_rejected_without_flags(client,
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "insert-only-app",
-            "api_key": "io-1",
+            "api_key": "unit-test-key-io-1",
             "allowed_databases": ["allowed-db"],
             "allow_insert": True,
         })
@@ -938,7 +946,7 @@ async def test_query_execute_apikey_ddl_rejected_even_with_all_flags(client, adm
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "full-write-app",
-            "api_key": "fw-1",
+            "api_key": "unit-test-key-fw-1",
             "allowed_databases": ["allowed-db"],
             "allow_insert": True,
             "allow_update": True,
@@ -964,7 +972,7 @@ async def test_query_execute_apikey_table_acl_blocks_unlisted_table(client, admi
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "tabled-app",
-            "api_key": "tb-1",
+            "api_key": "unit-test-key-tb-1",
             "allowed_databases": ["allowed-db"],
             "allowed_tables": ["orders"],
         })
@@ -993,7 +1001,7 @@ async def test_query_execute_apikey_table_acl_applies_to_writes(client, admin_to
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "tabled-writer-app",
-            "api_key": "tw-1",
+            "api_key": "unit-test-key-tw-1",
             "allowed_databases": ["allowed-db"],
             "allow_insert": True,
             "allowed_tables": ["orders"],
@@ -1043,7 +1051,7 @@ async def test_query_execute_apikey_expired_key_returns_401(client, admin_token,
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "expired-app",
-            "api_key": "ex-1",
+            "api_key": "unit-test-key-ex-1",
             "allowed_databases": ["allowed-db"],
         })
 
@@ -1069,7 +1077,7 @@ async def test_list_api_keys_includes_expires_at(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
             "name": "listed-app",
-            "api_key": "ls-1",
+            "api_key": "unit-test-key-ls-1",
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         resp = await client.get("/admin/api-keys", headers=auth_header(admin_token))

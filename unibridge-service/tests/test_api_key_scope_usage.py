@@ -19,7 +19,7 @@ async def _create_key(client, token: str | None, name: str) -> dict:
             "/admin/api-keys",
             json={
                 "name": name,
-                "api_key": f"{name}-secret",
+                "api_key": f"{name}-secret-value-0001",
                 "allowed_databases": [],
                 "allowed_routes": [],
             },

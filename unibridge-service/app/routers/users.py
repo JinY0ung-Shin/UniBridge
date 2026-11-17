@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ROLE_PRIORITY, CurrentUser, require_permission
+from app.auth import ROLE_PRIORITY, CurrentUser, get_role_permissions, require_permission
 from app.config import settings
 from app.database import get_db
 from app.keycloak_admin import KeycloakAdminClient
@@ -19,6 +19,7 @@ from app.schemas import (
     ResetPasswordRequest,
     ToggleEnabledRequest,
 )
+from app.routers.api_keys import revoke_self_service_key
 from app.services.audit import log_admin_action
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,21 @@ async def change_role(
     """Change a user's application role (assign new first, then remove old)."""
     kc = _get_kc_admin()
 
+    # A role that cannot hold a self-service key takes the key the user already
+    # has out of service. Roles outside ROLE_PRIORITY never reach the app from
+    # a token, whatever permissions they list.
+    if (
+        body.role not in ROLE_PRIORITY
+        or "apikeys.self" not in await get_role_permissions(db, body.role)
+    ):
+        await revoke_self_service_key(
+            db,
+            user_id,
+            actor=user.username,
+            reason=f"Expired: owner moved to role '{body.role}'",
+            delete=False,
+        )
+
     # Assign new role first (so user is never without a role)
     await kc.assign_realm_role(user_id, body.role)
 
@@ -223,6 +239,16 @@ async def toggle_enabled(
             detail="Cannot change your own enabled status",
         )
 
+    if not body.enabled:
+        # Before the account change: see revoke_self_service_key.
+        await revoke_self_service_key(
+            db,
+            user_id,
+            actor=user.username,
+            reason="Expired: owner account disabled",
+            delete=False,
+        )
+
     await kc.update_user_enabled(user_id, body.enabled)
     # Refresh and return enriched user
     updated = await kc.get_user(user_id)
@@ -259,6 +285,15 @@ async def delete_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
         )
+
+    # Before the account change: see revoke_self_service_key.
+    await revoke_self_service_key(
+        db,
+        user_id,
+        actor=user.username,
+        reason="Deleted: owner account deleted",
+        delete=True,
+    )
 
     await kc.delete_user(user_id)
     await log_admin_action(

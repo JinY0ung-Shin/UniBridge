@@ -72,7 +72,7 @@ class TestRedactSnapshot:
         assert out["service_keys"][0]["header_name"] == "X-Key"
 
     def test_masks_api_key_and_secret_fields(self):
-        out = redact_snapshot({"api_key": "key-abcdef1234", "secret": "topsecret9090"})
+        out = redact_snapshot({"api_key": "unit-test-key-key-abcdef1234", "secret": "topsecret9090"})
         assert out["api_key"] == "***1234"
         assert out["secret"] == "***9090"
 
@@ -236,7 +236,7 @@ class TestApiKeyAuditing:
                 json={
                     "name": "audit-app",
                     "description": "billing service",
-                    "api_key": "key-secret9999",
+                    "api_key": "unit-test-key-key-secret9999",
                     "allowed_databases": ["mydb"],
                     "allowed_routes": [],
                 },
@@ -264,7 +264,7 @@ class TestApiKeyAuditing:
             mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
             await client.post(
                 "/admin/api-keys",
-                json={"name": "del-audit", "description": "temp", "api_key": "key-d2"},
+                json={"name": "del-audit", "description": "temp", "api_key": "unit-test-key-key-d2"},
                 headers=auth_header(admin_token),
             )
             resp = await client.delete(

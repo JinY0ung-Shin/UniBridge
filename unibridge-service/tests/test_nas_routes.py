@@ -75,7 +75,7 @@ async def test_browse_apikey_rejects_unallowed_alias(client, admin_token):
         client,
         admin_token,
         name="nas-app",
-        key="nas-key",
+        key="unit-test-key-nas-key",
         allowed_databases=["allowed-nas"],
         allowed_routes=["nas-api"],
     )
@@ -97,7 +97,7 @@ async def test_browse_apikey_allows_configured_alias(client, admin_token):
         client,
         admin_token,
         name="nas-allowed-app",
-        key="nas-key-allowed",
+        key="unit-test-key-nas-key-allowed",
         allowed_databases=["allowed-nas"],
         allowed_routes=["nas-api"],
     )
@@ -119,7 +119,7 @@ async def test_browse_apikey_wildcard_allows_any_alias(client, admin_token):
         client,
         admin_token,
         name="nas-wild",
-        key="nas-wild-key",
+        key="unit-test-key-nas-wild-key",
         allowed_databases=["*"],
         allowed_routes=["nas-api"],
     )

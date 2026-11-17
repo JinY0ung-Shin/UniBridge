@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, get_role_permissions, require_permission
+from app.config import settings
 from app.database import get_db
 from app.db_types import utcnow
 from app.models import ApiKeyAccess
@@ -69,12 +70,81 @@ def _generate_api_key() -> str:
     return secrets.token_urlsafe(32)
 
 
+async def _require_live_account(user: CurrentUser) -> None:
+    """Refuse to issue or extend a self-service key for a deleted or disabled account.
+
+    The Users page stops a user's key when the account is deleted or disabled
+    (:func:`revoke_self_service_key`), but the access token that user already
+    holds stays valid until it expires (5 minutes by default). Without this
+    check that is long enough to issue or renew a key good for another 30 days.
+    So the account is read from Keycloak itself, not from the token.
+
+    The role is still taken from the token: a user moved to a role without
+    ``apikeys.self`` can renew until that token expires. Reading roles here
+    would have to match how the token got them (direct, group or composite).
+
+    Dev HS256 mode has no Keycloak to ask and is left alone.
+    """
+    if not settings.KEYCLOAK_JWT_AUDIENCE:
+        return
+    # Imported here: the users router imports this module.
+    from app.routers import users as users_router
+
+    kc = users_router._get_kc_admin()
+    try:
+        account = await kc.get_user(user.sub)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="This account no longer exists"
+            )
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not check the account with Keycloak: {exc}",
+        )
+    if not account.get("enabled", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This account is disabled"
+        )
+
+
 def _extract_api_key(consumer: dict, mask: bool = True) -> str | None:
     plugins = consumer.get("plugins", {})
     key = plugins.get("key-auth", {}).get("key")
     if not key:
         return None
     return mask_secret(key) if mask else key
+
+
+async def _ensure_key_value_unused(value: str, *, own_name: str | None = None) -> None:
+    """Refuse a key value that another API key already has.
+
+    APISIX stores two consumers with one key value without complaint and then
+    resolves a request to whichever it finds, so the caller would get the other
+    key's grants, limit and usage. Only typed-in values need the check; the
+    generated ones are 256 random bits. ``own_name`` is the key being updated,
+    which may keep its own value.
+
+    Fails closed: without the consumer list the value cannot be told apart from
+    a taken one.
+    """
+    try:
+        consumers = await apisix_client.list_resources("consumers")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to check the key value against existing API keys: {exc}",
+        )
+    for consumer in consumers.get("items", []):
+        if not isinstance(consumer, dict) or consumer.get("username") == own_name:
+            continue
+        if _extract_api_key(consumer, mask=False) == value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This key value is already used by another API key",
+            )
 
 
 def _is_master_access(allowed_databases: list[str], allowed_routes: list[str]) -> bool:
@@ -416,15 +486,19 @@ async def create_api_key(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"API key '{body.name}' already exists")
 
-    consumer_body: dict = {"username": body.name}
-    plugins: dict = {}
-    if body.api_key:
-        plugins["key-auth"] = {"key": body.api_key}
+    # A consumer without key-auth is a key nobody can use, so a create always
+    # carries a value: the caller's, or a generated one.
+    api_key = body.api_key
+    if api_key:
+        await _ensure_key_value_unused(api_key)
+    else:
+        api_key = _generate_api_key()
+
+    plugins: dict = {"key-auth": {"key": api_key}}
     limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
     if limit_cfg is not None:
         plugins["limit-count"] = limit_cfg
-    if plugins:
-        consumer_body["plugins"] = plugins
+    consumer_body: dict = {"username": body.name, "plugins": plugins}
 
     try:
         await apisix_client.put_resource("consumers", body.name, consumer_body)
@@ -467,7 +541,7 @@ async def create_api_key(
     await db.refresh(access)
 
     # Use the key we sent, not the PUT response (APISIX 3.x encrypts it in PUT responses)
-    response = _to_response(access, api_key=body.api_key, key_created=True)
+    response = _to_response(access, api_key=api_key, key_created=True)
     await log_admin_action(
         db,
         actor=_admin.username,
@@ -506,6 +580,7 @@ async def create_my_api_key(
 ) -> ApiKeyResponse:
     if not user.sub:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No subject in token")
+    await _require_live_account(user)
 
     # Fast-path friendly 409 (the unique consumer_name constraint below is the real guard).
     existing = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
@@ -559,7 +634,18 @@ async def create_my_api_key(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to provision API key: {exc}")
 
     await db.refresh(access)
-    return _to_response(access, api_key=new_key, key_created=True)
+    response = _to_response(access, api_key=new_key, key_created=True)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="create",
+        resource_type="api_key",
+        resource_id=consumer_name,
+        summary="Issued self-service key",
+        before=None,
+        after=response.model_dump(),
+    )
+    return response
 
 
 @router.post("/me/regenerate", response_model=ApiKeyResponse)
@@ -571,6 +657,8 @@ async def regenerate_my_api_key(
     access = result.scalar_one_or_none()
     if access is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to regenerate")
+    await _require_live_account(user)
+    before_expires_at = access.expires_at
     new_key = _generate_api_key()
     try:
         existing_consumer = await apisix_client.get_resource("consumers", access.consumer_name)
@@ -610,6 +698,22 @@ async def regenerate_my_api_key(
         raise
     await db.commit()
     await db.refresh(access)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="update",
+        resource_type="api_key",
+        resource_id=access.consumer_name,
+        summary="Regenerated self-service key (new key value)",
+        before={
+            "name": access.consumer_name,
+            "expires_at": before_expires_at.isoformat() if before_expires_at else None,
+        },
+        after={
+            "name": access.consumer_name,
+            "expires_at": access.expires_at.isoformat() if access.expires_at else None,
+        },
+    )
     return _to_response(access, api_key=new_key, key_created=True)
 
 
@@ -627,6 +731,7 @@ async def renew_my_api_key(
     access = result.scalar_one_or_none()
     if access is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to renew")
+    await _require_live_account(user)
 
     before_expires_at = access.expires_at
     access.expires_at = utcnow() + SELF_KEY_TTL
@@ -681,9 +786,39 @@ async def delete_my_api_key(
     access = result.scalar_one_or_none()
     if access is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to delete")
-    await _sync_consumer_restriction([], access.consumer_name)
+    before_snapshot = _self_key_snapshot(access)
+    await _remove_key(db, access)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="delete",
+        resource_type="api_key",
+        resource_id=before_snapshot["name"],
+        summary="Deleted self-service key",
+        before=before_snapshot,
+        after=None,
+    )
+
+
+def _self_key_snapshot(access: ApiKeyAccess) -> dict[str, Any]:
+    return {
+        "name": access.consumer_name,
+        "description": access.description,
+        "owner": access.owner,
+        "expires_at": access.expires_at.isoformat() if access.expires_at else None,
+    }
+
+
+async def _remove_key(db: AsyncSession, access: ApiKeyAccess) -> None:
+    """Take a key off every route, delete its consumer, then its row.
+
+    In that order, so a failure on the way leaves the row behind for a retry
+    instead of a consumer nobody can see or delete from the UI.
+    """
+    name = access.consumer_name
+    await _sync_consumer_restriction([], name)
     try:
-        await apisix_client.delete_resource("consumers", access.consumer_name)
+        await apisix_client.delete_resource("consumers", name)
     except HTTPStatusError as exc:
         if exc.response.status_code != 404:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"APISIX error: {exc.response.text}")
@@ -691,6 +826,59 @@ async def delete_my_api_key(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to delete consumer: {exc}")
     await db.delete(access)
     await db.commit()
+
+
+async def revoke_self_service_key(
+    db: AsyncSession,
+    sub: str,
+    *,
+    actor: str,
+    reason: str,
+    delete: bool,
+) -> None:
+    """Stop a user's self-service key because of what happened to the account.
+
+    The key authenticates on its own, so removing or disabling the Keycloak
+    account does not touch it: without this it keeps working until its 30-day
+    expiry. Called by the user admin routes BEFORE they change the account, so
+    an APISIX failure aborts the whole request rather than leaving a live key
+    behind an account that is gone.
+
+    ``delete=True`` (account deleted) removes the key. ``delete=False``
+    (account disabled, or moved to a role without ``apikeys.self``) only
+    expires it: the consumer keeps the key value, so once the account is back
+    its owner can Renew and carry on with the same key.
+    """
+    access = (
+        await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == sub))
+    ).scalar_one_or_none()
+    if access is None:
+        return
+    before_snapshot = _self_key_snapshot(access)
+    name = access.consumer_name
+
+    if delete:
+        await _remove_key(db, access)
+        after_snapshot = None
+    else:
+        if is_expired(access):
+            return
+        await _sync_consumer_restriction([], name)
+        access.expires_at = utcnow()
+        await db.commit()
+        await db.refresh(access)
+        after_snapshot = _self_key_snapshot(access)
+
+    await log_admin_action(
+        db,
+        actor=actor,
+        action="delete" if delete else "update",
+        resource_type="api_key",
+        resource_id=name,
+        summary=reason,
+        before=before_snapshot,
+        after=after_snapshot,
+    )
 
 
 @router.put("/{name}", response_model=ApiKeyResponse)
@@ -777,6 +965,7 @@ async def update_api_key(
                 detail=f"Cannot update API key '{name}': failed to read existing APISIX consumer ({exc})",
             )
         if body.api_key:
+            await _ensure_key_value_unused(body.api_key, own_name=name)
             existing_plugins["key-auth"] = {"key": body.api_key}
         if rate_limit_provided:
             limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
@@ -797,8 +986,12 @@ async def update_api_key(
     # Sync consumer-restriction BEFORE committing DB — abort on failure
     # If sync fails and we already updated the consumer key, rollback the key change
     if access_changed:
+        # An expired key keeps its stored grants but must stay off the routes:
+        # whitelisting it here would let it through the gateway (the LLM routes
+        # never reach the app's own expiry check) until the next reconcile.
+        gateway_routes = [] if is_expired(access) else next_allowed_routes
         try:
-            await _sync_consumer_restriction(next_allowed_routes, name)
+            await _sync_consumer_restriction(gateway_routes, name)
         except HTTPException:
             if old_consumer_plugins is not None:
                 try:

@@ -48,7 +48,7 @@ def _patch_routes_listing():
 
 async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="usage-app", key="usage-key", allowed_routes=["usages-api"]
+        client, admin_token, name="usage-app", key="unit-test-key-usage-key", allowed_routes=["usages-api"]
     )
     results = [{"metric": {"route": "query-api"}, "value": [0, "42"]}]
     mock = AsyncMock(return_value=results)
@@ -73,7 +73,7 @@ async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
 
 async def test_apikey_caller_llm_routes_hidden(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="usage-app2", key="usage-key2", allowed_routes=["usages-api"]
+        client, admin_token, name="usage-app2", key="unit-test-key-usage-key2", allowed_routes=["usages-api"]
     )
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
@@ -94,7 +94,7 @@ async def test_apikey_caller_llm_routes_hidden(client, admin_token):
 
 async def test_master_key_sees_all_consumers_combined(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="master-app", key="master-key",
+        client, admin_token, name="master-app", key="unit-test-key-master-key",
         allowed_routes=[], is_master=True,
     )
     results = [
@@ -117,7 +117,7 @@ async def test_master_key_sees_all_consumers_combined(client, admin_token):
 
 async def test_master_key_can_filter_specific_consumer_and_include_llm(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="master-app2", key="master-key2",
+        client, admin_token, name="master-app2", key="unit-test-key-master-key2",
         allowed_routes=[], is_master=True,
     )
     mock = AsyncMock(return_value=[])
@@ -143,7 +143,7 @@ async def test_unknown_consumer_rejected(client):
 
 async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="lat-app", key="lat-key", allowed_routes=["usages-api"]
+        client, admin_token, name="lat-app", key="unit-test-key-lat-key", allowed_routes=["usages-api"]
     )
 
     async def fake(query, eval_time=None):
@@ -176,7 +176,7 @@ async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token)
 
 async def test_apikey_caller_future_date_empty(client, admin_token):
     await _create_apikey(
-        client, admin_token, name="fut-app", key="fut-key", allowed_routes=["usages-api"]
+        client, admin_token, name="fut-app", key="unit-test-key-fut-key", allowed_routes=["usages-api"]
     )
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):

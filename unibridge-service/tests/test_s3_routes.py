@@ -21,7 +21,7 @@ async def test_s3_browse_apikey_rejects_unallowed_alias(client, admin_token):
             "/admin/api-keys",
             json={
                 "name": "s3-app",
-                "api_key": "s3-key",
+                "api_key": "unit-test-key-s3-key",
                 "allowed_databases": ["allowed-s3"],
                 "allowed_routes": ["s3-api"],
             },
@@ -57,7 +57,7 @@ async def test_s3_browse_apikey_allows_configured_alias(client, admin_token):
             "/admin/api-keys",
             json={
                 "name": "s3-allowed-app",
-                "api_key": "s3-key-allowed",
+                "api_key": "unit-test-key-s3-key-allowed",
                 "allowed_databases": ["allowed-s3"],
                 "allowed_routes": ["s3-api"],
             },
@@ -94,7 +94,7 @@ async def test_s3_browse_apikey_rejects_bucket_outside_connection_allowlist(clie
             "/admin/api-keys",
             json={
                 "name": "s3-bucket-app",
-                "api_key": "s3-key-bucket",
+                "api_key": "unit-test-key-s3-key-bucket",
                 "allowed_databases": ["allowed-s3"],
                 "allowed_routes": ["s3-api"],
             },

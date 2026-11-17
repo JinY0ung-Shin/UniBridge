@@ -261,7 +261,7 @@ async def test_save_keyauth_route_whitelists_master_consumers(client, admin_toke
         api_keys_apisix.list_resources = AsyncMock(return_value={"items": []})
         create_resp = await client.post(
             "/admin/api-keys",
-            json={"name": "master-app", "api_key": "mk", "is_master": True},
+            json={"name": "master-app", "api_key": "unit-test-key-mk", "is_master": True},
             headers=auth_header(admin_token),
         )
     assert create_resp.status_code == 201

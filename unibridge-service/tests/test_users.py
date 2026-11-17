@@ -354,3 +354,189 @@ class TestDeleteUser:
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 422
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The self-service API key follows the account
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SELF_KEY = "self_" + USER_1_ID.replace("-", "")
+QUERY_ROUTE = {
+    "id": "query-api",
+    "uri": "/api/query/*",
+    "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": [SELF_KEY, "other-app"]}},
+}
+
+
+def _sessions(seeded_db):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    return async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+
+
+async def _issue_self_key(seeded_db, expires_in_days: int = 20) -> None:
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import ApiKeyAccess
+
+    async with _sessions(seeded_db)() as db:
+        db.add(ApiKeyAccess(
+            consumer_name=SELF_KEY,
+            description="Self-service key for alice",
+            owner=USER_1_ID,
+            created_by="alice",
+            allowed_databases=json.dumps(["*"]),
+            allowed_routes=json.dumps(["query-api", "s3-api"]),
+            rate_limit_per_minute=30,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=expires_in_days),
+        ))
+        await db.commit()
+
+
+async def _stored_self_key(seeded_db):
+    from sqlalchemy import select
+
+    from app.models import ApiKeyAccess
+
+    async with _sessions(seeded_db)() as db:
+        return (
+            await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == USER_1_ID))
+        ).scalar_one_or_none()
+
+
+def _is_expired(access) -> bool:
+    from datetime import datetime, timezone
+
+    expires_at = access.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
+
+
+@pytest.fixture
+def apisix():
+    with patch("app.routers.api_keys.apisix_client") as mock:
+        mock.list_resources = AsyncMock(return_value={"items": [QUERY_ROUTE]})
+        mock.put_resource = AsyncMock(return_value={})
+        mock.delete_resource = AsyncMock()
+        yield mock
+
+
+def _whitelists(apisix) -> list[list[str]]:
+    return [
+        call.args[2]["plugins"]["consumer-restriction"]["whitelist"]
+        for call in apisix.put_resource.await_args_list
+        if call.args[0] == "routes"
+    ]
+
+
+class TestSelfServiceKeyFollowsAccount:
+    async def test_deleting_a_user_deletes_their_key(
+        self, client, admin_token, kc_mock, seeded_db, apisix
+    ):
+        from sqlalchemy import select
+
+        from app.models import AdminAuditLog
+
+        await _issue_self_key(seeded_db)
+
+        resp = await client.delete(
+            f"/admin/users/{USER_1_ID}", headers=auth_header(admin_token)
+        )
+
+        assert resp.status_code == 204
+        assert await _stored_self_key(seeded_db) is None
+        # Off the route (other keys stay), then the consumer holding the value.
+        assert _whitelists(apisix) == [["other-app"]]
+        apisix.delete_resource.assert_awaited_once_with("consumers", SELF_KEY)
+        kc_mock.delete_user.assert_awaited_once_with(USER_1_ID)
+
+        async with _sessions(seeded_db)() as db:
+            row = (
+                await db.execute(
+                    select(AdminAuditLog).where(AdminAuditLog.resource_type == "api_key")
+                )
+            ).scalar_one()
+        assert (row.actor, row.action, row.resource_id) == ("testadmin", "delete", SELF_KEY)
+        assert "account deleted" in row.summary
+
+    async def test_user_is_kept_when_the_key_cannot_be_removed(
+        self, client, admin_token, kc_mock, seeded_db, apisix
+    ):
+        await _issue_self_key(seeded_db)
+        apisix.list_resources = AsyncMock(side_effect=RuntimeError("apisix down"))
+
+        resp = await client.delete(
+            f"/admin/users/{USER_1_ID}", headers=auth_header(admin_token)
+        )
+
+        # A deleted account with a live key is the case this guards against.
+        assert resp.status_code == 502
+        kc_mock.delete_user.assert_not_awaited()
+        assert await _stored_self_key(seeded_db) is not None
+
+    async def test_disabling_a_user_expires_their_key_but_keeps_its_value(
+        self, client, admin_token, kc_mock, seeded_db, apisix
+    ):
+        await _issue_self_key(seeded_db)
+
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/enabled",
+            json={"enabled": False},
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 200
+        access = await _stored_self_key(seeded_db)
+        assert _is_expired(access)
+        assert _whitelists(apisix) == [["other-app"]]
+        # The consumer stays, so Renew restores the same key value later.
+        apisix.delete_resource.assert_not_awaited()
+        kc_mock.update_user_enabled.assert_awaited_once_with(USER_1_ID, False)
+
+    async def test_enabling_a_user_leaves_their_key_alone(
+        self, client, admin_token, kc_mock, seeded_db, apisix
+    ):
+        await _issue_self_key(seeded_db, expires_in_days=-1)
+
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/enabled",
+            json={"enabled": True},
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 200
+        # Still expired: the owner renews it themselves.
+        assert _is_expired(await _stored_self_key(seeded_db))
+        apisix.list_resources.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("role", "expired"),
+        [("admin", False), ("user", False), ("auditor", True)],
+    )
+    async def test_role_change_expires_the_key_only_without_self_service(
+        self, client, admin_token, kc_mock, seeded_db, apisix, role, expired
+    ):
+        await _issue_self_key(seeded_db)
+
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/role",
+            json={"role": role},
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 200
+        assert _is_expired(await _stored_self_key(seeded_db)) is expired
+        kc_mock.assign_realm_role.assert_awaited_once_with(USER_1_ID, role)
+
+    async def test_user_without_a_key_needs_no_gateway_call(
+        self, client, admin_token, kc_mock, apisix
+    ):
+        resp = await client.delete(
+            f"/admin/users/{USER_1_ID}", headers=auth_header(admin_token)
+        )
+
+        assert resp.status_code == 204
+        apisix.list_resources.assert_not_awaited()
+        kc_mock.delete_user.assert_awaited_once_with(USER_1_ID)

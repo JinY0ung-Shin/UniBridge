@@ -285,7 +285,7 @@ async def test_zip_apikey_rejects_unallowed_alias(client, admin_token, share):
         client,
         admin_token,
         name="zip-other",
-        key="zip-other-key",
+        key="unit-test-key-zip-other-key",
         allowed_databases=["some-other-nas"],
         allowed_routes=["nas-api"],
     )
@@ -305,7 +305,7 @@ async def test_zip_apikey_allows_configured_alias(client, admin_token, share):
         client,
         admin_token,
         name="zip-app",
-        key="zip-app-key",
+        key="unit-test-key-zip-app-key",
         allowed_databases=["nas"],
         allowed_routes=["nas-api"],
     )

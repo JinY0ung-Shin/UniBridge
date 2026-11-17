@@ -479,6 +479,40 @@ it holds the only copy of the key value — so **Renew** (same key value) and
 than waiting for the next reconcile pass. Consumers that the database does not
 know about are never touched, and a key whose stored grants fail to parse keeps
 its current whitelist membership instead of being revoked over a storage bug.
+An admin editing an expired key (description, grants, limit) does not put it
+back on the routes either: the stored grants change, the gateway keeps
+refusing it until it is renewed or regenerated.
+
+### API key values
+
+A key created without a value gets a generated one. A value an admin types in
+(new key, or a new value for an existing key) must be 16 to 256 characters of
+letters, digits and ASCII punctuation, without spaces, and must not be a value
+another key already has: APISIX accepts two keys with one value and then
+serves a request as whichever it finds, so the save is refused with `409`
+instead. Keys saved before this rule keep their value until it is next
+changed.
+
+### Self-service keys follow the account
+
+A self-service key authenticates on its own, so the **Users** page takes it
+out of service together with the account:
+
+- **Delete user** deletes the key (routes, APISIX consumer, database row).
+- **Disable user**, or a move to a role without `apikeys.self`, expires it at
+  once. The key value is kept: after the account is enabled again its owner
+  presses **Renew** and carries on with the same key.
+
+The key is handled before the account, so if APISIX cannot be reached the
+request fails with `502` and the account is left as it was: retry once the
+gateway answers. The access token such a user already holds stays valid until
+it expires (5 minutes by default), so issuing, regenerating and renewing a
+self-service key read the account from Keycloak rather than from the token and
+answer `403` for one that is gone or disabled. The role still comes from the
+token, so a user moved off `apikeys.self` can renew until that token expires. Keys an admin issued on the **API Keys** page belong to no
+account and are not touched. Issuing, regenerating, renewing and deleting a
+self-service key are recorded in the admin audit log, like the admin-issued
+ones.
 
 ### Prometheus query API through the gateway
 

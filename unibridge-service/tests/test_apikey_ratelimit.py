@@ -45,7 +45,7 @@ async def test_create_api_key_provisions_limit_count(client, admin_token):
             "/admin/api-keys",
             json={
                 "name": "rl-create",
-                "api_key": "rl-key-1",
+                "api_key": "unit-test-key-rl-key-1",
                 "rate_limit_per_minute": 30,
             },
             headers=auth_header(admin_token),
@@ -58,7 +58,7 @@ async def test_create_api_key_provisions_limit_count(client, admin_token):
         plugins = bodies[0]["plugins"]
         assert plugins["limit-count"] == EXPECTED_LIMIT_COUNT
         # key-auth must also be provisioned when api_key was provided
-        assert plugins["key-auth"] == {"key": "rl-key-1"}
+        assert plugins["key-auth"] == {"key": "unit-test-key-rl-key-1"}
 
 
 async def test_update_api_key_rate_limit_only_preserves_key_auth(client, admin_token):
@@ -72,7 +72,7 @@ async def test_update_api_key_rate_limit_only_preserves_key_auth(client, admin_t
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         create_resp = await client.post(
             "/admin/api-keys",
-            json={"name": "rl-update", "api_key": "rl-key-2"},
+            json={"name": "rl-update", "api_key": "unit-test-key-rl-key-2"},
             headers=auth_header(admin_token),
         )
         assert create_resp.status_code == 201
@@ -114,7 +114,7 @@ async def test_update_clears_rate_limit_when_explicit_null(client, admin_token):
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         create_resp = await client.post(
             "/admin/api-keys",
-            json={"name": "rl-clear", "api_key": "rl-key-3", "rate_limit_per_minute": 30},
+            json={"name": "rl-clear", "api_key": "unit-test-key-rl-key-3", "rate_limit_per_minute": 30},
             headers=auth_header(admin_token),
         )
         assert create_resp.status_code == 201
@@ -160,7 +160,7 @@ async def test_update_omitted_rate_limit_preserves_existing(client, admin_token)
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         create_resp = await client.post(
             "/admin/api-keys",
-            json={"name": "rl-keep", "api_key": "rl-key-4", "rate_limit_per_minute": 30},
+            json={"name": "rl-keep", "api_key": "unit-test-key-rl-key-4", "rate_limit_per_minute": 30},
             headers=auth_header(admin_token),
         )
         assert create_resp.status_code == 201

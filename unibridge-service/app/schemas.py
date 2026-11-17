@@ -2,10 +2,17 @@ from datetime import datetime
 import json
 from pathlib import PurePosixPath
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from app.services.apisix_system_resources import is_system_route
 from app.services.webhook_security import validate_webhook_url
@@ -886,10 +893,42 @@ class TokenResponse(BaseModel):
 
 # ── API Keys ────────────────────────────────────────────────────────────────
 
+API_KEY_MIN_LENGTH = 16
+API_KEY_MAX_LENGTH = 256
+_API_KEY_CHARS = re.compile(r"[\x21-\x7e]+")
+
+
+def _check_api_key_value(value: str | None) -> str | None:
+    """Rules for a key value an admin types in (generated ones always pass).
+
+    The value travels in an HTTP header and is the only secret between a caller
+    and the key's grants, so it has to be long enough not to be guessed and
+    free of characters a header cannot carry unchanged. An empty string means
+    "not given", as it always has.
+    """
+    if not value:
+        return None
+    if not API_KEY_MIN_LENGTH <= len(value) <= API_KEY_MAX_LENGTH:
+        raise ValueError(
+            f"API key must be {API_KEY_MIN_LENGTH} to {API_KEY_MAX_LENGTH} characters long"
+        )
+    if not _API_KEY_CHARS.fullmatch(value):
+        raise ValueError(
+            "API key may only contain letters, digits and ASCII punctuation, without spaces"
+        )
+    return value
+
+
+ApiKeyValue = Annotated[str | None, AfterValidator(_check_api_key_value)]
+
+
 class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Unique key name (becomes APISIX consumer username)")
     description: str = ""
-    api_key: str | None = Field(None, description="Custom API key value; auto-generated if omitted")
+    api_key: ApiKeyValue = Field(
+        None,
+        description="Custom API key value (16-256 characters, no spaces); auto-generated if omitted",
+    )
     is_master: bool = Field(False, description="Grant all current and future data sources and routes")
     allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
     allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
@@ -902,7 +941,10 @@ class ApiKeyCreate(BaseModel):
 
 class ApiKeyUpdate(BaseModel):
     description: str | None = None
-    api_key: str | None = Field(None, description="New API key; omit to keep current")
+    api_key: ApiKeyValue = Field(
+        None,
+        description="New API key value (16-256 characters, no spaces); omit to keep current",
+    )
     is_master: bool | None = None
     allowed_databases: list[str] | None = None
     allowed_routes: list[str] | None = None
