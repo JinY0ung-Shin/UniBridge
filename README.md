@@ -1472,8 +1472,8 @@ fails on a floating tag or on layouts that disagree. On an air-gapped host,
 `docker load` the new tags first: `quay.io/keycloak/keycloak`,
 `grafana/grafana` (the `grafana/grafana-oss` repository stopped receiving
 releases), `nginx`, `quay.io/coreos/etcd`, `prom/prometheus`,
-`quay.io/prometheus/blackbox-exporter`, `apache/apisix`, and for the image
-builds `node` and `alpine`.
+`quay.io/prometheus/blackbox-exporter`, `prom/alertmanager`, `apache/apisix`,
+and for the image builds `node` and `alpine`.
 
 A normal blue-green deploy rebuilds the UI image but never recreates infra.
 Build the etcd tools image first: its tag follows the etcd release, and the
@@ -1484,12 +1484,17 @@ docker compose -p unibridge-infra -f docker-compose.infra.yml build etcd-init
 ./backup/backup.sh                      # keycloak-db.sql.gz: Keycloak cannot be downgraded
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait keycloak grafana bifrost-tls
 docker compose -p unibridge-infra -f docker-compose.infra.yml logs keycloak | grep '\[init\]'
-docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait blackbox-exporter prometheus
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait blackbox-exporter prometheus alertmanager
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait etcd etcd-init
 # single stack: the same commands as `docker compose ...`, without -p and -f
 ```
 
-Prometheus and etcd keep their data volumes. Recreating etcd does not restart
+Prometheus, Alertmanager and etcd keep their data volumes. Alertmanager
+0.35 reads 0.27's silences and notification log (and 0.27 reads them back), so
+an alert that was already mailed is not mailed again by the upgrade. Its
+webhook body gains `notification_reason` and `routeLabels`, which
+`/internal/alertmanager` ignores, and its API no longer sends CORS headers,
+which nothing here relied on. Recreating etcd does not restart
 APISIX, which keeps proxying from its cached routes, but the APISIX Admin API
 answers 503 (`etcdserver: invalid auth token`) for about a minute afterwards:
 do not deploy or change routes until

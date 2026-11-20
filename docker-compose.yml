@@ -425,7 +425,7 @@ services:
       - apihub-net
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.35.0
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 128m
