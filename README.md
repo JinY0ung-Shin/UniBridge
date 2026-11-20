@@ -1447,17 +1447,30 @@ and `docker-compose.yml` (nginx also in `docker-compose.edge.yml` and
 fails on a floating tag or on layouts that disagree. On an air-gapped host,
 `docker load` the new tags first: `quay.io/keycloak/keycloak`,
 `grafana/grafana` (the `grafana/grafana-oss` repository stopped receiving
-releases), `nginx`, and for the image builds `node` and `alpine`.
+releases), `nginx`, `quay.io/coreos/etcd`, `prom/prometheus`,
+`quay.io/prometheus/blackbox-exporter`, and for the image builds `node` and
+`alpine`.
 
-A normal blue-green deploy rebuilds the UI image but never recreates infra:
+A normal blue-green deploy rebuilds the UI image but never recreates infra.
+Build the etcd tools image first: its tag follows the etcd release, and the
+backup takes the etcd snapshot with it.
 
 ```bash
-./backup/backup.sh                      # keycloak-db.sql.gz: Keycloak cannot be downgraded
 docker compose -p unibridge-infra -f docker-compose.infra.yml build etcd-init
+./backup/backup.sh                      # keycloak-db.sql.gz: Keycloak cannot be downgraded
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait keycloak grafana bifrost-tls
 docker compose -p unibridge-infra -f docker-compose.infra.yml logs keycloak | grep '\[init\]'
-# single stack: docker compose build etcd-init && docker compose up -d --wait keycloak grafana bifrost-tls
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait blackbox-exporter prometheus
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait etcd etcd-init
+# single stack: the same commands as `docker compose ...`, without -p and -f
 ```
+
+Prometheus and etcd keep their data volumes. Recreating etcd does not restart
+APISIX, which keeps proxying from its cached routes, but the APISIX Admin API
+answers 503 (`etcdserver: invalid auth token`) for about a minute afterwards:
+do not deploy or change routes until
+`curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-KEY: $APISIX_ADMIN_KEY" http://127.0.0.1:9180/apisix/admin/routes`
+prints 200 again.
 
 Logins and UniBridge's user management are down while Keycloak restarts (about
 a minute; it migrates `keycloak-db` on the first boot of a new version, and
@@ -1732,13 +1745,13 @@ The third command introspects every `UtcDateTime` column, skips tables that don'
 etcd는 APISIX의 설정 저장소입니다. 라우트·업스트림·컨슈머 전체가 여기에만 저장되므로 기본적으로
 인증이 활성화되어 있습니다.
 
-이미지는 업스트림 `quay.io/coreos/etcd:v3.5.33`을 사용합니다. 이전에 쓰던 `bitnamilegacy/etcd:3.5.11`은
+이미지는 업스트림 `quay.io/coreos/etcd:v3.5.36`을 사용합니다. 이전에 쓰던 `bitnamilegacy/etcd:3.5.11`은
 Bitnami가 2025년 8월 무료 이미지를 아카이브로 옮기면서 동결된 태그라, 보안 업데이트가 더 이상
 제공되지 않습니다.
 
 업스트림 이미지는 distroless(셸·`rm`·`curl` 없음)이고 Bitnami의 `ALLOW_NONE_AUTHENTICATION` /
 `ETCD_ROOT_PASSWORD` 부트스트랩이 없습니다. 그 역할은 일회성 서비스 `etcd-init`이 대신합니다
-(`etcd/init-auth.sh`, 이미지 `unibridge-etcd-tools:3.5.33`, `etcd/Dockerfile`에서 빌드). 이 서비스는
+(`etcd/init-auth.sh`, 이미지 `unibridge-etcd-tools:3.5.36`, `etcd/Dockerfile`에서 빌드). 이 서비스는
 멱등이라 `up`할 때마다 다시 실행되고, APISIX는 `service_completed_successfully`로 부트스트랩 완료를
 기다린 뒤에 기동합니다. 같은 이미지를 `backup/lib/etcd.sh`의 스냅샷 저장·복구에도 사용합니다.
 
@@ -1820,7 +1833,7 @@ compose 변경을 되돌린 뒤, Bitnami 이미지는 uid 1001로 실행되므�
 git checkout -- docker-compose.yml docker-compose.infra.yml
 docker compose -p unibridge-infra -f docker-compose.infra.yml stop etcd
 docker run --rm -v unibridge_etcd-data:/bitnami/etcd --entrypoint chown \
-  unibridge-etcd-tools:3.5.33 -R 1001:0 /bitnami/etcd
+  unibridge-etcd-tools:3.5.36 -R 1001:0 /bitnami/etcd
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait etcd apisix
 ```
 

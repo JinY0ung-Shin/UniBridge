@@ -49,7 +49,7 @@ compose layouts (env parity, Bifrost), `scripts/deploy-bluegreen.sh`,
 Prometheus rules: `test_deployment_security.py` runs `promtool check rules` and the rule unit
 tests in `prometheus/tests/unibridge-alerts.test.yml` (kept outside `rules/` so Prometheus does
 not load them) with the compose-pinned image, skipped without Docker or the image. By hand:
-`docker run --rm -v "$PWD/prometheus":/w:ro -w /w --entrypoint promtool prom/prometheus:v3.11.1 check rules rules/unibridge-alerts.yml`
+`docker run --rm -v "$PWD/prometheus":/w:ro -w /w --entrypoint promtool prom/prometheus:v3.16.0 check rules rules/unibridge-alerts.yml`
 (`test rules tests/unibridge-alerts.test.yml` for the unit tests).
 
 Release gate — the only gate, there is no CI: the `unibridge-release` skill (canonical copy

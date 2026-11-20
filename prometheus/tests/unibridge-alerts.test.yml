@@ -3,7 +3,7 @@
 # runs them too, and skips without docker or that image):
 #
 #   docker run --rm -v "$PWD":/w:ro -w /w --entrypoint promtool \
-#     prom/prometheus:v3.11.1 test rules tests/unibridge-alerts.test.yml
+#     prom/prometheus:v3.16.0 test rules tests/unibridge-alerts.test.yml
 #
 # unibridge_* metrics come from two jobs (see the top of the rules file).
 # `unibridge-service` scrapes a DNS alias that both blue/green colors answer;

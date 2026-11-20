@@ -9,7 +9,7 @@
 #   * backup/lib/etcd.sh  — snapshot save / restore sibling containers.
 # Both use this one image, so the etcd CLI version can never drift between the
 # server, the bootstrap and the backups.
-ARG ETCD_IMAGE=quay.io/coreos/etcd:v3.5.33
+ARG ETCD_IMAGE=quay.io/coreos/etcd:v3.5.36
 
 FROM ${ETCD_IMAGE} AS etcd
 

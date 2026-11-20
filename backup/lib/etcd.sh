@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # is distroless (no shell, no rm, no temp dirs), so snapshots are taken and
 # restored from sibling containers of this image instead of `exec`ing into etcd.
 # Build it by hand with `docker compose build etcd-init` if it is missing.
-ETCD_TOOLS_IMAGE="${ETCD_TOOLS_IMAGE:-unibridge-etcd-tools:3.5.33}"
+ETCD_TOOLS_IMAGE="${ETCD_TOOLS_IMAGE:-unibridge-etcd-tools:3.5.36}"
 
 # Client endpoint of the etcd service, as seen from a sibling container on the
 # same docker network.

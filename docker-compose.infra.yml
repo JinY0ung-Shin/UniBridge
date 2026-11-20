@@ -12,7 +12,7 @@ services:
     # moved its free images to that archive in Aug 2025, so the old tag is
     # frozen and gets no security updates — and etcd is the only store of every
     # APISIX route, upstream and consumer.
-    image: quay.io/coreos/etcd:v3.5.33
+    image: quay.io/coreos/etcd:v3.5.36
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 256m
@@ -60,7 +60,7 @@ services:
   # backup/lib/etcd.sh runs snapshot save/restore from (ETCD_TOOLS_IMAGE).
   etcd-init:
     build: ./etcd
-    image: unibridge-etcd-tools:3.5.33
+    image: unibridge-etcd-tools:3.5.36
     restart: "no"
     logging: *default-logging
     mem_limit: 64m
@@ -193,7 +193,7 @@ services:
       - apihub-net
 
   prometheus:
-    image: prom/prometheus:v3.11.1
+    image: prom/prometheus:v3.16.0
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
@@ -231,7 +231,7 @@ services:
       - apihub-net
 
   blackbox-exporter:
-    image: quay.io/prometheus/blackbox-exporter:v0.28.0
+    image: quay.io/prometheus/blackbox-exporter:v0.29.1
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 128m

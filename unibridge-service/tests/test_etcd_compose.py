@@ -192,7 +192,15 @@ def test_etcd_dockerfile_builds_the_tools_image_from_the_pinned_etcd() -> None:
     )
     # The compose etcd image and the tools image must come from one etcd build,
     # or etcdctl/etcdutl can drift away from the server they talk to.
-    assert match.group(1) == _service(COMPOSE_FILE, "etcd")["image"]
+    etcd_image = _service(COMPOSE_FILE, "etcd")["image"]
+    assert match.group(1) == etcd_image
+    # The tools tag names that etcd release, and the backups default to the tag
+    # compose builds: a tag bumped in one place leaves backup.sh looking for an
+    # image that was never built.
+    tools_image = f"unibridge-etcd-tools:{etcd_image.rpartition(':v')[2]}"
+    for compose_path in COMPOSE_FILES:
+        assert _service(compose_path, "etcd-init")["image"] == tools_image, compose_path.name
+    assert f'ETCD_TOOLS_IMAGE="${{ETCD_TOOLS_IMAGE:-{tools_image}}}"' in BACKUP_ETCD_LIB.read_text(encoding="utf-8")
 
     for binary in ("etcdctl", "etcdutl"):
         assert f"/usr/local/bin/{binary}" in dockerfile, (
