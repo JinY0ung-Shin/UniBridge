@@ -6,7 +6,7 @@
 # Usage (run as root on the target server):
 #   ./install_node_exporter.sh [VERSION] [LISTEN_ADDR]
 #
-#   VERSION      node_exporter release, default 1.8.2
+#   VERSION      node_exporter release, default 1.13.1
 #   LISTEN_ADDR  bind address, default 0.0.0.0:39100
 #
 # After it runs, register the host in UniBridge (Servers → Add server) with
@@ -16,7 +16,7 @@
 # docs/server-monitoring.md.
 set -euo pipefail
 
-VERSION="${1:-1.8.2}"
+VERSION="${1:-1.13.1}"
 LISTEN_ADDR="${2:-0.0.0.0:39100}"
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -67,7 +67,10 @@ EOF
 
 echo "==> Enabling and starting node_exporter"
 systemctl daemon-reload
-systemctl enable --now node_exporter
+systemctl enable node_exporter
+# restart, not `enable --now`: a host being upgraded already runs the old binary,
+# and `--now` leaves a running unit as it is.
+systemctl restart node_exporter
 systemctl --no-pager status node_exporter | head -n 5 || true
 
 echo

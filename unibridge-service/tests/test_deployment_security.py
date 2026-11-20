@@ -1425,6 +1425,12 @@ def test_both_layouts_run_the_same_pinned_images() -> None:
             continue
         assert re.search(r"\d+\.\d+\.\d+", tag), f"{name}: pin an exact release, not {image!r}"
 
+    # The exporters operators copy to monitored hosts.
+    for compose_file in sorted((REPO_ROOT / "deploy").glob("*/docker-compose.yml")):
+        for name, service in _load_yaml(compose_file)["services"].items():
+            tag = service["image"].rpartition(":")[2]
+            assert re.search(r"\d+\.\d+\.\d+", tag), f"{compose_file.parent.name}/{name}: pin an exact release"
+
     # One nginx for the edge, the Bifrost TLS proxy and the UI image.
     ui_stages = re.findall(r"^FROM (\S+)", (REPO_ROOT / "unibridge-ui" / "Dockerfile").read_text(encoding="utf-8"), re.M)
     assert ui_stages[-1] == split["edge"]["image"] == split["bifrost-tls"]["image"]

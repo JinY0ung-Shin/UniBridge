@@ -87,9 +87,12 @@ Pick the method that fits the host. Both expose node_exporter on `:39100`.
 Run as root on the target host:
 
 ```bash
-sudo ./scripts/install_node_exporter.sh            # defaults: v1.8.2, 0.0.0.0:39100
-sudo ./scripts/install_node_exporter.sh 1.8.2 0.0.0.0:39100
+sudo ./scripts/install_node_exporter.sh            # defaults: v1.13.1, 0.0.0.0:39100
+sudo ./scripts/install_node_exporter.sh 1.13.1 0.0.0.0:39100
 ```
+
+Running it again with a newer version upgrades in place: it replaces the binary
+and restarts the unit.
 
 **Method B — Docker Compose (for hosts already running Docker).**
 Copy [`deploy/node-exporter/docker-compose.yml`](../deploy/node-exporter/docker-compose.yml)
@@ -104,6 +107,15 @@ curl -s http://localhost:39100/metrics | grep -m1 node_filesystem_avail_bytes
 > and the host root bind-mounted at `/host` with `--path.rootfs=/host`. This is
 > required — a plain container only sees its own namespaces and would report
 > *container* metrics, not the host's. Don't drop those settings.
+
+To upgrade a host, copy the new compose file over the old one and run
+`docker compose up -d` again (air-gapped: `docker load` the new tag first).
+Hosts on different node_exporter versions can be monitored side by side:
+between v1.8.2 and v1.13.1 the CPU, memory and filesystem series UniBridge
+reads are the same, labels included. v1.13.1 no longer exports seven
+`node_memory_*` fields (`KReclaimable`, `Hugetlb`, `FileHugePages`,
+`FilePmdMapped`, `SecPageTables`, `Balloon`, `Unaccepted`), which matters only
+to dashboards of your own that read them.
 
 Then **open port 39100 from the central Prometheus host to the server** (host
 firewall, Prometheus IP only — node_exporter has no auth):
