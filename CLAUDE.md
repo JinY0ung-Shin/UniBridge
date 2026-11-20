@@ -157,7 +157,10 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   must carry come from `openapi_export.extract_template_params(sql, db_type)`, the same
   call MCP `run_template` checks with: a new placeholder syntax goes there.
 - **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) is the
-  only LLM gateway: it serves `/api/llm` (next bullet). The old `/api/llm-bi` side-by-side
+  only LLM gateway: it serves `/api/llm` (next bullet). It applies a `config.json` section
+  only when that section changed and otherwise keeps its store's values, so a setting that
+  "is already in the file" may not be in effect; every URL under `framework.pricing` is a
+  local `file://` because production has no egress and a dropped connection stalls the boot. The old `/api/llm-bi` side-by-side
   routes are gone; what is left is `llm-bi-not-found`, a 404 pointing to `/api/llm` that
   every provisioning boot puts back (the deploy re-provisions without it), while the old
   `llm-bi-*` ids stay protected and in the LLM-route metric exclusions for old series.

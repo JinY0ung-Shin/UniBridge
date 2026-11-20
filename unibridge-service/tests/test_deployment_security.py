@@ -2078,15 +2078,21 @@ def test_bifrost_config_authenticates_admin_api_and_inference_and_boots_offline(
     assert "mcp_configs" not in gateway_vk
 
     # An empty config store cannot boot without its datasheets, and getbifrost.ai
-    # is unreachable air-gapped: both load from files mounted from bifrost/.
+    # is unreachable air-gapped: all three load from files mounted from bifrost/.
+    # The MCP library too, although its sync is off: while this section is
+    # unchanged Bifrost keeps the interval its store holds, and with a non-zero
+    # one there the boot waits three minutes on getbifrost.ai (#106).
     pricing = config["framework"]["pricing"]
     for key, filename in (
         ("pricing_url", "pricing.json"),
         ("model_parameters_url", "model-parameters.json"),
+        ("mcp_library_url", "mcp-library.json"),
     ):
         assert pricing[key] == f"file:///app/bundle/{filename}"
-        json.loads((BIFROST_DIR / filename).read_text(encoding="utf-8"))
+        # An object: Bifrost refuses an array as the MCP library.
+        assert isinstance(json.loads((BIFROST_DIR / filename).read_text(encoding="utf-8")), dict)
     assert pricing["mcp_library_sync_interval"] == 0
+    assert not [url for url in pricing.values() if isinstance(url, str) and not url.startswith("file://")]
 
     service = _load_yaml(COMPOSE_FILE)["services"]["bifrost"]
     assert "./bifrost/config.json:/app/data/config.json:ro" in service["volumes"]

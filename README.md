@@ -1179,7 +1179,14 @@ leaves, change the Bifrost admin password and set the new value as
 
    Booting needs no internet: `config.json` loads the (intentionally empty)
    pricing and model-parameter datasheets in `bifrost/` over `file://`, since
-   self-hosted models have no list price. On an air-gapped host, first import
+   self-hosted models have no list price, and points the MCP library at an
+   empty file there too. That last one matters although its sync is off:
+   Bifrost applies a `config.json` section only when the section changed, and
+   otherwise keeps what its store holds. A store with the library's sync
+   interval switched on (saved in the Bifrost UI, say) therefore fetched
+   `https://getbifrost.ai/mcp-library` before listening, and where that
+   connection is dropped rather than refused the boot stood still for three
+   minutes. On an air-gapped host, first import
    the `maximhq/bifrost` tag pinned in `docker-compose.infra.yml` with
    `docker save`/`docker load`; `bifrost-tls` runs the nginx tag the edge and
    UI images already use.
@@ -1411,6 +1418,12 @@ booted on the migrated data and served traffic, with the pre-upgrade
 `config.db` put back and without, so a rollback only needs the tag.
 
 Notes for v2.2.6 → v2.6.0:
+
+- If Bifrost takes minutes to become healthy and logs `initial MCP library
+  sync failed`, its store holds a non-zero MCP library sync interval and the
+  host cannot reach `getbifrost.ai`. `config.json` now names a local file for
+  the library, which both re-applies the section (interval 0) and leaves
+  nothing pointing outside; recreate the container once to pick it up.
 
 - v2.6.0 adds columns to the `logs` table on its first boot, which takes
   longer on a large `logs.db`: upgrade in a quiet window.

@@ -69,6 +69,7 @@
     "pricing": {
       "pricing_url": "file:///app/bundle/pricing.json",
       "model_parameters_url": "file:///app/bundle/model-parameters.json",
+      "mcp_library_url": "file:///app/bundle/mcp-library.json",
       "mcp_library_sync_interval": 0
     }
   }
