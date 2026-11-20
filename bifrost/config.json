@@ -26,7 +26,8 @@
       "convert_chat_to_responses": false,
       "should_drop_params": true,
       "should_convert_params": false,
-      "azure_deepseek": false
+      "azure_deepseek": false,
+      "force_reasoning_only_models_to_responses": false
     }
   },
   "governance": {

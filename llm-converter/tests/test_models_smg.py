@@ -46,7 +46,7 @@ def _listing(*entries: dict | str) -> httpx.Response:
 
 
 def _providers(**base_urls: str) -> httpx.Response:
-    """Bifrost's ``GET /api/providers`` as v2.2.6 answers it."""
+    """Bifrost's ``GET /api/providers`` as v2.2.6 and v2.6.0 answer it."""
     return _json(
         200,
         {

@@ -665,7 +665,7 @@ services:
   # unibridge-service points the /api/llm routes at it. These two services
   # are identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
-    image: maximhq/bifrost:v2.2.6
+    image: maximhq/bifrost:v2.6.0
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 2g

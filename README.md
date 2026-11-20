@@ -1400,22 +1400,46 @@ set `BIFROST_TEST_DATA_VOLUME`, copy that volume instead.
 To roll back, put the previous tag back and run the same `up -d --wait`; if the
 older tag cannot read the migrated store, restore the snapshot taken before the
 upgrade with `./backup/restore.sh bifrost <snapshot>`. In the
-v2.2.4 → v2.2.6 rehearsal (offline, with this repo's `bifrost/config.json`),
-v2.2.6 added v2.2.5's two nullable pricing columns and kept the registered
-provider and key, the gateway virtual key, the request logs and the open admin
-sessions, so the UniBridge sign-in hand-off and its forced logout carried on.
-v2.2.4 then booted on the migrated data with nothing pending and served
-traffic, so a rollback only needs the tag.
+v2.2.6 → v2.6.0 rehearsal (offline, with this repo's `bifrost/config.json`, a
+mock OpenAI-compatible server and `llm-converter` in front), v2.6.0 migrated
+both stores and kept the registered provider and key, the gateway virtual key,
+the request logs and the open admin sessions, so the UniBridge
+sign-in hand-off and its forced logout carried on. Chat completions (plain,
+streamed, with tools), `/v1/models`, the error answers and everything through
+the converter (`/v1/messages`, `/v1/responses`) came back the same. v2.2.6 then
+booted on the migrated data and served traffic, with the pre-upgrade
+`config.db` put back and without, so a rollback only needs the tag.
 
-Notes for v2.2.4 → v2.2.6:
+Notes for v2.2.6 → v2.6.0:
 
-- v2.2.6 locks the management API behind a setup token while no admin login is
-  active. `config.json` turns the admin login on from the first boot, so the
-  lock never applies here (`/api/session/is-auth-enabled` reports
-  `setup_required: false`).
-- v2.2.6 turns `enforce_auth_on_inference` on by default and rejects
-  private-network datasheet URLs. `config.json` already sets the former, and it
-  loads the datasheets over `file://`.
+- v2.6.0 adds columns to the `logs` table on its first boot, which takes
+  longer on a large `logs.db`: upgrade in a quiet window.
+
+- Responses gain an `x-bifrost-request-id` header, an
+  `Access-Control-Expose-Headers` header and
+  `extra_fields.routing_info.requested_model`/`requested_provider`. The
+  converter strips the `x-bifrost-*` headers and `extra_fields` as before.
+- Request-level metrics gain an `app` label (the caller's `User-Agent`
+  class). UniBridge's queries and dashboards aggregate it away; an external
+  query matching a series exactly needs the label.
+  `bifrost_upstream_latency_seconds` no longer counts requests Bifrost
+  refused itself (no virtual key, model not allowed) nor queue wait and retry
+  backoff, so average latency reads slightly differently across the upgrade.
+- v2.6.0 serves Bifrost's management API as MCP tools on `POST /v1/mcp`. It
+  refuses a virtual key alone (401) and answers 503 until `bifrost_url` is
+  set, which `config.json` leaves unset; the `/api/llm` routes and both UI
+  allowlists do not forward the path.
+- The upgrade turns on `compat.force_reasoning_only_models_to_responses`
+  (chat requests with tools go to the Responses API for models the datasheet
+  marks reasoning-only). `config.json` sets it to false like the other
+  conversions; with the empty datasheets here no model is marked either way.
+- The dashboard shows Warp, an assistant over the logs and settings (alpha,
+  on by default). It calls a model only after an admin picks one in its
+  settings; `"feature_flags": {"flags": {"warp": {"enabled": false}}}` in
+  `config.json` turns it off (`/api/warp/*` then answers 404).
+- The UI still lives under the same top-level paths, so the allowlists in
+  `bifrost/tls-proxy.conf` and `unibridge-ui/nginx-bifrost-ui.conf` are
+  unchanged.
 
 A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter or
 content logging, also takes a new container, since `up` leaves an unchanged
