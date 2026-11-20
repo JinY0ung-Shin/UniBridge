@@ -1203,7 +1203,7 @@ async def test_call_api_yields_to_a_broader_host_route(client, seeded_db, admin_
 @pytest.mark.parametrize(
     ("uri", "priority", "path", "sent"),
     [
-        # APISIX 3.15, measured: a * inside a uri is a wildcard too, and at the
+        # APISIX 3.15 and 3.20, measured: a * inside a uri is a wildcard too, and at the
         # same priority that route wins over the plain /orders/* one.
         ("/api/ext/orders/*/audit", 0, "/api/ext/orders/7/audit", False),
         ("/api/ext/orders/*/audit", 0, "/api/ext/orders/7/8/audit", False),

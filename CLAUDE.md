@@ -79,7 +79,9 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   ties a token to the URL it was requested on; `keycloak/docker-entrypoint.sh` does what needs
   a realm admin (that scope on the service client, creating a client with protocol mappers) as
   the bootstrap admin and the rest as the service account. Rehearse a Keycloak bump from the
-  old version on a throwaway DB before changing the tag.
+  old version on a throwaway DB before changing the tag. **APISIX 3.20+** stores consumer
+  key values as `$ENC$v1$...`, which 3.15 cannot read: a rollback needs the README's
+  save-and-put-back steps. etcd is the only store of API key values.
 - **RBAC**: flat string permissions in `app/auth.py::ALL_PERMISSIONS`; roles→permissions with
   a 60s in-process cache (`invalidate_permission_cache()` after changes).
 - **APISIX consumer-restriction is preserved** on route updates for the fixed system routes

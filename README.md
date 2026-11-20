@@ -1448,8 +1448,8 @@ fails on a floating tag or on layouts that disagree. On an air-gapped host,
 `docker load` the new tags first: `quay.io/keycloak/keycloak`,
 `grafana/grafana` (the `grafana/grafana-oss` repository stopped receiving
 releases), `nginx`, `quay.io/coreos/etcd`, `prom/prometheus`,
-`quay.io/prometheus/blackbox-exporter`, and for the image builds `node` and
-`alpine`.
+`quay.io/prometheus/blackbox-exporter`, `apache/apisix`, and for the image
+builds `node` and `alpine`.
 
 A normal blue-green deploy rebuilds the UI image but never recreates infra.
 Build the etcd tools image first: its tag follows the etcd release, and the
@@ -1493,6 +1493,53 @@ admin console open realm `apihub` → **Clients** → `apihub-service` →
 scope ties a token to the address it was requested on, so a client must ask for
 its token and call the Admin API through the same Keycloak URL, as the service
 does with `KEYCLOAK_URL`.
+
+**APISIX 3.20.** Recreating APISIX closes the gateway for the few seconds the
+new container takes to start: every `/api/*` request fails meanwhile and open
+LLM streams are cut, so pick a quiet moment.
+
+```bash
+./backup/backup.sh                      # etcd.snap: routes, upstreams, API keys
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait apisix
+./scripts/test-apisix-node-path-prefix.sh
+# single stack: docker compose up -d --wait apisix
+```
+
+What changes for callers and upstreams, measured from 3.15.0:
+
+- An upstream now receives the caller's `X-Forwarded-For` chain with the
+  gateway's peer appended (`<client>, <UI nginx>`); 3.15 replaced it with the
+  peer alone. The first entries are whatever the caller sent, so an upstream
+  must not take them for an address check.
+- A request path with `.` or `..` segments reaches the upstream normalized
+  (`/api/x/a/../b` as `/api/x/b`, and a `%2F` in such a path decoded) instead
+  of as the raw request line. Route matching, key-auth, per-key grants and
+  rate limits answer as before.
+- `apisix_http_status` gains a `response_source` label (`apisix` or
+  `upstream`). UniBridge's own queries, dashboards and alert rules all
+  aggregate with `sum by`, so they read the same; an external query matching
+  the series exactly needs the label.
+- The metrics shared memory grows from 10 MiB to 128 MiB, so APISIX's memory
+  can rise by up to that much as series accumulate. Look at
+  `docker stats` for `apisix` against its 512 MiB limit after the upgrade.
+
+**Going back to 3.15.** APISIX 3.20 stores API key values in a format 3.15
+cannot read (`$ENC$v1$...` in etcd). Keys that existed before the upgrade
+keep working after a rollback; a key created or given a new value on 3.20
+answers 401. Save the keys while 3.20 is still running, where the Admin API
+returns them in clear, and put them back once 3.15 is up:
+
+```bash
+umask 077
+curl -s -H "X-API-KEY: $APISIX_ADMIN_KEY" http://127.0.0.1:9180/apisix/admin/consumers > consumers.json
+# set the image back to apache/apisix:3.15.0-debian in the compose file, then:
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait apisix
+jq -c '.list[].value | del(.create_time, .update_time)' consumers.json | while read -r consumer; do
+  curl -s -o /dev/null -w '%{http_code}\n' -X PUT -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+    -d "$consumer" http://127.0.0.1:9180/apisix/admin/consumers
+done
+rm consumers.json                       # it holds every API key value
+```
 
 ### Latency percentiles past 60s
 

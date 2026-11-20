@@ -79,7 +79,7 @@ services:
       - apihub-net
 
   apisix:
-    image: apache/apisix:3.15.0-debian
+    image: apache/apisix:3.20.0-debian
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
