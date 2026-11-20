@@ -34,8 +34,8 @@ image_of() {
 }
 APISIX_IMAGE="$(image_of apache/apisix)"
 ETCD_IMAGE="$(image_of quay.io/coreos/etcd)"
-ECHO_IMAGE=nginx:alpine
-[[ -n "$APISIX_IMAGE" && -n "$ETCD_IMAGE" ]] || { echo "could not read images from docker-compose.infra.yml" >&2; exit 1; }
+ECHO_IMAGE="$(image_of nginx)"
+[[ -n "$APISIX_IMAGE" && -n "$ETCD_IMAGE" && -n "$ECHO_IMAGE" ]] || { echo "could not read images from docker-compose.infra.yml" >&2; exit 1; }
 WORK_DIR="$(mktemp -d)"
 
 # apisix/config.yaml only lets 127.0.0.1 and 172.16.0.0/12 reach the Admin API,

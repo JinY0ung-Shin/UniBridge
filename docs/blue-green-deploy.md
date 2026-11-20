@@ -229,8 +229,8 @@ APISIX upstreams, reloads edge nginx, and records the active color in
 The edge keeps running across deploys and only reloads its config, unless its
 definition changed: `docker-compose.edge.yml` itself, a `.env` value it reads
 (`UNIBRIDGE_EDGE_PORT`, `TLS_CERT_PATH`/`TLS_KEY_PATH`,
-`TLS_BIFROST_CERT_PATH`/`TLS_BIFROST_KEY_PATH`), or a newer local
-`nginx:alpine` image. Then the switch recreates the container, on `promote` and
+`TLS_BIFROST_CERT_PATH`/`TLS_BIFROST_KEY_PATH`), or its pinned nginx
+tag. Then the switch recreates the container, on `promote` and
 `rollback` too: nginx stops listening at once, so the public port stays closed
 while it drains open requests (up to Docker's 10 s stop grace period) and the
 new container starts, and requests still open at the end of the grace period,

@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -13,7 +13,7 @@ RUN npm config set strict-ssl false && \
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:1.31.9-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Outside conf.d: entrypoint.sh renders it there only when BIFROST_UI_HOSTNAME is set.

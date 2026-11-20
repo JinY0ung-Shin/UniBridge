@@ -140,7 +140,7 @@ services:
       - apihub-net
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.8.2
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 2g
@@ -501,7 +501,7 @@ services:
       - apihub-net
 
   grafana:
-    image: grafana/grafana-oss:12.4.3
+    image: grafana/grafana:12.4.15
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 256m
@@ -722,7 +722,7 @@ services:
   # but not inference or /metrics: model traffic enters through the gateway's
   # /api/llm routes only.
   bifrost-tls:
-    image: nginx:alpine
+    image: nginx:1.31.9-alpine
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 128m

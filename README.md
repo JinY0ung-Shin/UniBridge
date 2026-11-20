@@ -1181,8 +1181,8 @@ leaves, change the Bifrost admin password and set the new value as
    pricing and model-parameter datasheets in `bifrost/` over `file://`, since
    self-hosted models have no list price. On an air-gapped host, first import
    the `maximhq/bifrost` tag pinned in `docker-compose.infra.yml` with
-   `docker save`/`docker load`; `bifrost-tls` runs `nginx:alpine`, which the
-   edge and UI images already use.
+   `docker save`/`docker load`; `bifrost-tls` runs the nginx tag the edge and
+   UI images already use.
 3. **Register providers** — in the Bifrost UI (the **Bifrost Admin** button) or
    through the management API on the host's loopback-only plain-HTTP port
    (`BIFROST_TEST_ADMIN_PORT`, default `18080`, used below). Register one
@@ -1381,7 +1381,7 @@ store (providers, provider keys, virtual keys) as `bifrost-config.db.gz`, which
 `./backup/restore.sh bifrost <snapshot>` puts back
 ([`backup/README.md`](./backup/README.md)). The snapshot leaves out `logs.db`,
 the request logs; to keep those as well, also copy the whole volume while the
-container is stopped (any image with `tar` works; `nginx:alpine` is already on
+container is stopped (any image with `tar` works; the nginx image is already on
 the host for `bifrost-tls`):
 
 ```bash
@@ -1390,7 +1390,7 @@ docker compose -p unibridge-infra -f docker-compose.infra.yml pull bifrost   # a
 docker compose -p unibridge-infra -f docker-compose.infra.yml stop bifrost
 # optional, with the request logs:
 docker run --rm --entrypoint tar -v unibridge_bifrost-test-data:/data:ro -v "$PWD":/backup \
-  nginx:alpine czf "/backup/bifrost-data-$(date +%Y%m%d%H%M).tgz" -C /data .
+  nginx:1.31.9-alpine czf "/backup/bifrost-data-$(date +%Y%m%d%H%M).tgz" -C /data .
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
 ```
 
@@ -1438,6 +1438,48 @@ docker run --rm --user 1000 --entrypoint python -v unibridge_bifrost-test-data:/
   -c "import sqlite3; c = sqlite3.connect('/data/logs.db'); c.execute('VACUUM'); c.close()"
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
 ```
+
+### Upgrading Keycloak, Grafana and nginx
+
+Every image is pinned to an exact release in both `docker-compose.infra.yml`
+and `docker-compose.yml` (nginx also in `docker-compose.edge.yml` and
+`unibridge-ui/Dockerfile`); change a tag in all of them. A deployment test
+fails on a floating tag or on layouts that disagree. On an air-gapped host,
+`docker load` the new tags first: `quay.io/keycloak/keycloak`,
+`grafana/grafana` (the `grafana/grafana-oss` repository stopped receiving
+releases), `nginx`, and for the image builds `node` and `alpine`.
+
+A normal blue-green deploy rebuilds the UI image but never recreates infra:
+
+```bash
+./backup/backup.sh                      # keycloak-db.sql.gz: Keycloak cannot be downgraded
+docker compose -p unibridge-infra -f docker-compose.infra.yml build etcd-init
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait keycloak grafana bifrost-tls
+docker compose -p unibridge-infra -f docker-compose.infra.yml logs keycloak | grep '\[init\]'
+# single stack: docker compose build etcd-init && docker compose up -d --wait keycloak grafana bifrost-tls
+```
+
+Logins and UniBridge's user management are down while Keycloak restarts (about
+a minute; it migrates `keycloak-db` on the first boot of a new version, and
+the old version cannot read the result, so going back means
+`./backup/restore.sh keycloak-db <snapshot>`). The edge runs nginx too, so the
+next `deploy`/`promote` recreates it once
+([docs/blue-green-deploy.md](./docs/blue-green-deploy.md)).
+
+**Keycloak 26.8.2 and the service account.** From 26.8.2 the Admin API answers
+401 unless the token carries the built-in `kc-admin-api` client scope, and
+Keycloak gives that scope to its own clients only. The entrypoint adds it to
+`KEYCLOAK_SERVICE_CLIENT_ID` on every boot, logged as
+`[init] Service client carries the kc-admin-api scope`. It does that as the
+admin in `KC_ADMIN_USER`/`KC_ADMIN_PASSWORD`. If that login no longer works
+(the password was changed in the console), the log says
+`The service account cannot call the Admin API` and the Users page fails:
+either put the current password in `.env` and recreate Keycloak, or in the
+admin console open realm `apihub` → **Clients** → `apihub-service` →
+**Client scopes** → **Add client scope** → `kc-admin-api` → **Default**. The
+scope ties a token to the address it was requested on, so a client must ask for
+its token and call the Admin API through the same Keycloak URL, as the service
+does with `KEYCLOAK_URL`.
 
 ### Latency percentiles past 60s
 

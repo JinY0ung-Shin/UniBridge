@@ -1406,6 +1406,44 @@ def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> 
     )
 
 
+def test_both_layouts_run_the_same_pinned_images() -> None:
+    # Production runs the split layout, so an image bumped in docker-compose.yml
+    # alone never reaches it. A floating tag (`nginx:alpine`, `keycloak:26.0`)
+    # is whatever the host pulled last: security fixes arrive only by accident.
+    single = _load_yaml(COMPOSE_FILE)["services"]
+    split = {
+        **_load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"],
+        **_load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"],
+    }
+    for name, service in split.items():
+        image = service["image"]
+        if name in single:
+            assert single[name]["image"] == image, name
+        tag = image.rpartition(":")[2]
+        # Postgres follows its major on purpose: minors are drop-in.
+        if image.startswith("postgres:"):
+            continue
+        assert re.search(r"\d+\.\d+\.\d+", tag), f"{name}: pin an exact release, not {image!r}"
+
+    # One nginx for the edge, the Bifrost TLS proxy and the UI image.
+    ui_stages = re.findall(r"^FROM (\S+)", (REPO_ROOT / "unibridge-ui" / "Dockerfile").read_text(encoding="utf-8"), re.M)
+    assert ui_stages[-1] == split["edge"]["image"] == split["bifrost-tls"]["image"]
+
+
+def test_keycloak_entrypoint_gives_the_service_client_the_admin_api_scope() -> None:
+    # Keycloak 26.8.2 answers 401 on the Admin API to a token without the
+    # kc-admin-api client scope, and 403 to a client administrator creating a
+    # client with protocol mappers. Both are done as the bootstrap admin, before
+    # the service-account session is restored.
+    script = (REPO_ROOT / "keycloak" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    boot = script[script.index("--realm master"):]
+    as_admin = boot[: boot.index("--realm apihub")]
+    assert 'client_scope_id kc-admin-api' in as_admin
+    assert 'default-client-scopes/$ADMIN_API_SCOPE_ID' in as_admin
+    assert "create_grafana_client" in as_admin
+    assert "create_grafana_client" not in boot[len(as_admin):]
+
+
 def test_bifrost_image_includes_the_management_auth_bypass_fix() -> None:
     # v2.2.5 fixed an authentication bypass: a percent-encoded path such as
     # `..%2F` reached protected /api endpoints without credentials. bifrost-tls
@@ -1910,9 +1948,11 @@ def _has_docker_image(image: str) -> bool:
     return inspected is not None and inspected.returncode == 0
 
 
+NGINX_IMAGE = _load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"]["edge"]["image"]
+
 NEEDS_NGINX_IMAGE = pytest.mark.skipif(
-    shutil.which("openssl") is None or not _has_docker_image("nginx:alpine"),
-    reason="needs openssl and a local nginx:alpine image",
+    shutil.which("openssl") is None or not _has_docker_image(NGINX_IMAGE),
+    reason=f"needs openssl and a local {NGINX_IMAGE} image",
 )
 
 
@@ -1959,7 +1999,7 @@ def test_edge_config_passes_nginx_t_with_and_without_the_bifrost_server(tmp_path
         nginx_t = _docker(
             "run", "--rm", "--network", "none",
             *[argument for volume in volumes for argument in ("-v", volume)],
-            "nginx:alpine", "nginx", "-t",
+            NGINX_IMAGE, "nginx", "-t",
             timeout=120,
         )
         if nginx_t is None:
@@ -1985,7 +2025,7 @@ def test_ui_entrypoint_asks_nginx_itself_whether_the_bifrost_pair_loads(tmp_path
     )
     result = _docker(
         "run", "--rm", "--network", "none", "-v", f"{one}:/one:ro", "-v", f"{mixed}:/mixed:ro",
-        "nginx:alpine", "sh", "-c", ask,
+        NGINX_IMAGE, "sh", "-c", ask,
         timeout=120,
     )
     if result is None:

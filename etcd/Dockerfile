@@ -13,7 +13,7 @@ ARG ETCD_IMAGE=quay.io/coreos/etcd:v3.5.33
 
 FROM ${ETCD_IMAGE} AS etcd
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # Optional mirror/proxy overrides, for parity with the other Dockerfiles in the
 # repo. Nothing is installed here — busybox sh plus the two copied static Go

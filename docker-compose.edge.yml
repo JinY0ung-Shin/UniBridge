@@ -8,7 +8,7 @@ name: ${UNIBRIDGE_EDGE_PROJECT:-unibridge-edge}
 
 services:
   edge:
-    image: nginx:alpine
+    image: nginx:1.31.9-alpine
     container_name: unibridge-edge
     restart: unless-stopped
     logging: *default-logging

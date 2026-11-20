@@ -72,6 +72,14 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   APISIX_INTERNAL_PROXY_SECRET, and JWT_SECRET in dev HS256 mode. Keycloak/CORS URLs
   auto-derive from `HOST_IP`; Keycloak URLs derive only when `KEYCLOAK_JWT_AUDIENCE` is set
   (empty = dev HS256 mode).
+- **Images are pinned to exact releases** in both layouts (nginx also in
+  `docker-compose.edge.yml` and `unibridge-ui/Dockerfile`), test-pinned; an infra image takes
+  effect only on a manual recreate (README "Upgrading Keycloak, Grafana and nginx").
+  **Keycloak 26.8.2+**: the Admin API answers 401 without the `kc-admin-api` client scope and
+  ties a token to the URL it was requested on; `keycloak/docker-entrypoint.sh` does what needs
+  a realm admin (that scope on the service client, creating a client with protocol mappers) as
+  the bootstrap admin and the rest as the service account. Rehearse a Keycloak bump from the
+  old version on a throwaway DB before changing the tag.
 - **RBAC**: flat string permissions in `app/auth.py::ALL_PERMISSIONS`; roles→permissions with
   a 60s in-process cache (`invalidate_permission_cache()` after changes).
 - **APISIX consumer-restriction is preserved** on route updates for the fixed system routes
